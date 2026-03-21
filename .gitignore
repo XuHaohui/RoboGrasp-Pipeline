@@ -1,0 +1,33 @@
+# ROS / catkin / colcon
+build/
+devel/
+install/
+log/
+.catkin_workspace
+
+# IDEs
+.vscode/
+.idea/
+
+# Backups
+src/piper/backup
+
+# Archive files
+*.7z
+*.zip
+*.tar
+
+# Logs
+*.log
+
+# Python
+**/__pycache__/
+
+# Misc
+.thumbs
+analytical_solution
+oculus_reader
+oculus_reader/oculus_reader
+
+# CMakeLists or other workspace files at src root
+src/CMakeLists.txt

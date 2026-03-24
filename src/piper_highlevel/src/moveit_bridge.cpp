@@ -7,62 +7,92 @@
 
 using std::placeholders::_1;
 
-class MoveItBridge : public rclcpp::Node {
-public:
-  MoveItBridge()
-  : Node("piper_moveit_bridge") {
+#include "moveit_bridge.hpp"
+#include <functional>
+#include <moveit/move_group_interface/move_group_interface.h>
+
+MoveItBridge::MoveItBridge()
+: Node("piper_moveit_bridge")
+{
     this->declare_parameter<std::string>("group_name", "arm");
     group_name_ = this->get_parameter("group_name").as_string();
 
-    // separate node for MoveGroupInterface
-    move_group_node_ = rclcpp::Node::make_shared("piper_move_group_client");
-    move_group_ = std::make_unique<moveit::planning_interface::MoveGroupInterface>(move_group_node_, group_name_);
+    // 订阅 /target_pose
+    sub_ = this->create_subscription<geometry_msgs::msg::PoseStamped>(
+        "/target_pose", 10, std::bind(&MoveItBridge::pose_cb, this, _1));
 
-    sub_ = this->create_subscription<geometry_msgs::msg::PoseStamped>("/target_pose", 10, std::bind(&MoveItBridge::pose_cb, this, _1));
+    // 发布 /joint_states（可视化用）
     pub_ = this->create_publisher<sensor_msgs::msg::JointState>("/joint_states", 10);
-    RCLCPP_INFO(this->get_logger(), "moveit_bridge started for group '%s'", group_name_.c_str());
-  }
 
-private:
-  void pose_cb(const geometry_msgs::msg::PoseStamped::SharedPtr msg) {
-    RCLCPP_INFO(this->get_logger(), "Received target pose, planning...");
-    move_group_->setPoseTarget(*msg);
+    timer_ = this->create_wall_timer(
+        std::chrono::milliseconds(500),
+        std::bind(&MoveItBridge::init_move_group, this));
+
+    RCLCPP_INFO(this->get_logger(), "MoveItBridge node created for group '%s'", group_name_.c_str());
+}
+
+// 延迟初始化 MoveGroupInterface
+void MoveItBridge::init_move_group()
+{
+    if (move_group_) return;
+
+    move_group_ = std::make_unique<moveit::planning_interface::MoveGroupInterface>(this->shared_from_this(), group_name_);
+
+    move_group_->setPlanningTime(10.0);
+    move_group_->setPlannerId("RRTConnectkConfigDefault");
+    RCLCPP_INFO(this->get_logger(), "MoveGroupInterface initialized");
+
+    timer_->cancel();
+}
+
+void MoveItBridge::pose_cb(const geometry_msgs::msg::PoseStamped::SharedPtr msg)
+{
+    if (!move_group_ || busy_) return;
+    busy_ = true;
+
+    RCLCPP_INFO(this->get_logger(), "Received target position");
+
+    move_group_->clearPoseTargets();
+
+    move_group_->setPoseReferenceFrame(msg->header.frame_id);
+
+    move_group_->setPositionTarget(
+        msg->pose.position.x,
+        msg->pose.position.y,
+        msg->pose.position.z
+    );
+
+    move_group_->setPlanningTime(5.0);
 
     moveit::planning_interface::MoveGroupInterface::Plan plan;
-    auto ok = (move_group_->plan(plan) == moveit::core::MoveItErrorCode::SUCCESS);
-    if (!ok) {
-      RCLCPP_WARN(this->get_logger(), "MoveIt plan failed");
-      return;
+
+    if (move_group_->plan(plan) != moveit::core::MoveItErrorCode::SUCCESS) {
+        RCLCPP_WARN(this->get_logger(), "Plan failed");
+        busy_ = false;
+        return;
     }
 
-    if (plan.trajectory_.joint_trajectory.points.empty()) {
-      RCLCPP_WARN(this->get_logger(), "Planned trajectory empty");
-      return;
+    RCLCPP_INFO(this->get_logger(), "Plan success");
+
+    if (move_group_->execute(plan) != moveit::core::MoveItErrorCode::SUCCESS) {
+        RCLCPP_WARN(this->get_logger(), "Execute failed");
+        busy_ = false;
+        return;
     }
 
-    const auto &joint_names = plan.trajectory_.joint_trajectory.joint_names;
-    const auto &positions = plan.trajectory_.joint_trajectory.points.back().positions;
+    RCLCPP_INFO(this->get_logger(), "Execution done");
 
-    sensor_msgs::msg::JointState js;
-    js.header.stamp = this->now();
-    js.name = joint_names;
-    js.position.assign(positions.begin(), positions.end());
+    busy_ = false;
+}
 
-    pub_->publish(js);
-    RCLCPP_INFO(this->get_logger(), "Published joint target (from MoveIt) with %zu joints", js.name.size());
-  }
+int main(int argc, char **argv)
+{
+    rclcpp::init(argc, argv);
 
-  std::string group_name_;
-  rclcpp::Node::SharedPtr move_group_node_;
-  std::unique_ptr<moveit::planning_interface::MoveGroupInterface> move_group_;
-  rclcpp::Subscription<geometry_msgs::msg::PoseStamped>::SharedPtr sub_;
-  rclcpp::Publisher<sensor_msgs::msg::JointState>::SharedPtr pub_;
-};
+    auto node = std::make_shared<MoveItBridge>();
+    node->init_move_group();  // 延迟初始化 MoveGroupInterface
+    rclcpp::spin(node);
 
-int main(int argc, char **argv) {
-  rclcpp::init(argc, argv);
-  auto node = std::make_shared<MoveItBridge>();
-  rclcpp::spin(node);
-  rclcpp::shutdown();
-  return 0;
+    rclcpp::shutdown();
+    return 0;
 }

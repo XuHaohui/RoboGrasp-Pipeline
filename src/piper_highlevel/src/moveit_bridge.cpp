@@ -1,14 +1,13 @@
 #include <memory>
 #include <vector>
+#include <functional>
 #include "rclcpp/rclcpp.hpp"
 #include "geometry_msgs/msg/pose_stamped.hpp"
 #include "sensor_msgs/msg/joint_state.hpp"
 #include <moveit/move_group_interface/move_group_interface.h>
+#include "piper_highlevel/moveit_bridge.hpp"
 
 using std::placeholders::_1;
-
-#include "piper_highlevel/moveit_bridge.hpp"
-#include <functional>
 
 MoveItBridge::MoveItBridge()
 : Node("piper_moveit_bridge")
@@ -16,115 +15,160 @@ MoveItBridge::MoveItBridge()
     this->declare_parameter<std::string>("group_name", "arm");
     group_name_ = this->get_parameter("group_name").as_string();
 
-    sub_ = this->create_subscription<geometry_msgs::msg::PoseStamped>(
-        "/target_pose", 10, std::bind(&MoveItBridge::pose_cb, this, _1));
-
+    sub_ = this->create_subscription<geometry_msgs::msg::PoseStamped>("/target_pose", 10, std::bind(&MoveItBridge::pose_cb, this, _1));
     pub_ = this->create_publisher<sensor_msgs::msg::JointState>("/joint_states", 10);
+    traj_pub_ = this->create_publisher<trajectory_msgs::msg::JointTrajectory>("/joint_trajectory", 10);
 
     timer_ = this->create_wall_timer(
         std::chrono::milliseconds(500),
         std::bind(&MoveItBridge::init_move_group, this));
 
-    RCLCPP_INFO(this->get_logger(), "MoveItBridge node created for group '%s'", group_name_.c_str());
 }
 
 void MoveItBridge::init_move_group()
 {
     if (move_group_) return;
 
-    move_group_ = std::make_unique<moveit::planning_interface::MoveGroupInterface>(this->shared_from_this(), group_name_);
-
-    move_group_->setPlanningTime(10.0);
-    move_group_->setPlannerId("RRTConnectkConfigDefault");
-    RCLCPP_INFO(this->get_logger(), "MoveGroupInterface initialized");
-
-    timer_->cancel();
+    try {
+        move_group_ = std::make_shared<moveit::planning_interface::MoveGroupInterface>(this->shared_from_this(), group_name_);
+        move_group_->setPlanningTime(10.0);
+        move_group_->setPlannerId("RRTConnectkConfigDefault");
+        RCLCPP_INFO(this->get_logger(), "MoveGroupInterface initialized successfully");
+        timer_->cancel();
+    } catch (const std::exception& e) {
+        RCLCPP_ERROR(this->get_logger(), "Failed to initialize MoveGroup: %s", e.what());
+    }
 }
 
 void MoveItBridge::pose_cb(const geometry_msgs::msg::PoseStamped::SharedPtr msg)
 {
-    if (!move_group_ || busy_) return;
+    if (!move_group_) {
+        RCLCPP_WARN(this->get_logger(), "MoveGroup not yet initialized, ignoring request.");
+        return;
+    }
+    
+    if (busy_) {
+        RCLCPP_WARN(this->get_logger(), "MoveGroup is busy, ignoring request.");
+        return;
+    }
+
     busy_ = true;
 
-    RCLCPP_INFO(this->get_logger(), "Received target position");
+    executeGraspSequence(msg->pose, msg->header.frame_id);
 
-    move_group_->clearPoseTargets();
-    move_group_->setPoseReferenceFrame(msg->header.frame_id);
+    busy_ = false;
+}
 
-    geometry_msgs::msg::Pose target = msg->pose;
-    geometry_msgs::msg::Pose pre_grasp = target;
+void MoveItBridge::executeGraspSequence(const geometry_msgs::msg::Pose& target_pose, const std::string& frame_id)
+{
+    move_group_->setPoseReferenceFrame(frame_id);
+    move_group_->setMaxVelocityScalingFactor(0.2);
+    move_group_->setMaxAccelerationScalingFactor(0.2);
+
+    // 1. 移动到预抓取位姿 (Pre-grasp)
+    geometry_msgs::msg::Pose pre_grasp = target_pose;
     pre_grasp.position.z += 0.05; 
-
-    move_group_->setPositionTarget(
-        pre_grasp.position.x,
-        pre_grasp.position.y,
-        pre_grasp.position.z
-    );
-
-    moveit::planning_interface::MoveGroupInterface::Plan plan1;
-    if (move_group_->plan(plan1) != moveit::core::MoveItErrorCode::SUCCESS) {
-        RCLCPP_WARN(this->get_logger(), "Pre-grasp plan failed");
-        busy_ = false;
+    if (!moveToPose(pre_grasp)) {
+        RCLCPP_ERROR(this->get_logger(), "Pre-grasp plan/execution failed");
         return;
     }
-
-    move_group_->execute(plan1);
     RCLCPP_INFO(this->get_logger(), "Reached pre-grasp");
 
-    std::vector<geometry_msgs::msg::Pose> waypoints;
-    waypoints.push_back(target);
-
-    moveit_msgs::msg::RobotTrajectory traj;
-    double fraction = move_group_->computeCartesianPath(
-        waypoints, 0.01, 0.0, traj);
-
-    if (fraction < 0.9) {
-        RCLCPP_WARN(this->get_logger(), "Cartesian path failed");
-        busy_ = false;
+    // 2. 笛卡尔运动接近目标 (Approach)
+    if (!cartesianMove(target_pose)) {
+        RCLCPP_ERROR(this->get_logger(), "Approach Cartesian path failed");
         return;
     }
-
-    moveit::planning_interface::MoveGroupInterface::Plan plan2;
-    plan2.trajectory_ = traj;
-    move_group_->execute(plan2);
-
     RCLCPP_INFO(this->get_logger(), "Approach done");
 
     rclcpp::sleep_for(std::chrono::milliseconds(500));
 
-    std::vector<geometry_msgs::msg::Pose> lift_waypoints;
-    geometry_msgs::msg::Pose lift_pose = target;
+    // 3. 抬起目标 (Lift)
+    geometry_msgs::msg::Pose lift_pose = target_pose;
     lift_pose.position.z += 0.10;
-
-    lift_waypoints.push_back(lift_pose);
-
-    moveit_msgs::msg::RobotTrajectory traj2;
-    fraction = move_group_->computeCartesianPath(
-        lift_waypoints, 0.01, 0.0, traj2);
-
-    if (fraction < 0.9) {
-        RCLCPP_WARN(this->get_logger(), "Lift failed");
-        busy_ = false;
+    if (!cartesianMove(lift_pose)) {
+        RCLCPP_ERROR(this->get_logger(), "Lift Cartesian path failed");
         return;
     }
-
-    moveit::planning_interface::MoveGroupInterface::Plan plan3;
-    plan3.trajectory_ = traj2;
-    move_group_->execute(plan3);
-
+    moveToPose(lift_pose);  
     RCLCPP_INFO(this->get_logger(), "Lift done");
+}
 
-    busy_ = false;
+bool MoveItBridge::moveToPose(const geometry_msgs::msg::Pose& pose)
+{
+    move_group_->clearPoseTargets();
+    move_group_->setPositionTarget(
+        pose.position.x,
+        pose.position.y,
+        pose.position.z
+    );
+    move_group_->setStartStateToCurrentState();
+
+    moveit::planning_interface::MoveGroupInterface::Plan plan;
+    if (move_group_->plan(plan) != moveit::core::MoveItErrorCode::SUCCESS) {
+        return false;
+    }
+
+    return executePlan(plan);
+}
+
+bool MoveItBridge::cartesianMove(const geometry_msgs::msg::Pose& target_pose)
+{
+    std::vector<geometry_msgs::msg::Pose> waypoints;
+    waypoints.push_back(target_pose);
+
+    moveit_msgs::msg::RobotTrajectory traj;
+    double fraction = move_group_->computeCartesianPath(waypoints, 0.005, 0.0, traj);
+
+    if (fraction < 0.9) {
+        RCLCPP_WARN(this->get_logger(), "Cartesian path only followed %.2f%% of the trajectory", fraction * 100.0);
+        return false;
+    }
+
+    moveit::planning_interface::MoveGroupInterface::Plan plan;
+    plan.trajectory_ = traj;
+    return executePlan(plan);
+}
+
+bool MoveItBridge::executePlan(
+    const moveit::planning_interface::MoveGroupInterface::Plan& plan)
+{
+    auto traj = plan.trajectory_.joint_trajectory;
+
+    double scale = 2.0;
+
+    for (auto& p : traj.points) {
+        rclcpp::Duration t(p.time_from_start);   
+        double new_t = t.seconds() * scale;
+
+        p.time_from_start = rclcpp::Duration::from_seconds(new_t);
+    }
+
+    for (auto& p : traj.points) {
+        for (auto& v : p.positions) {
+            if (std::isnan(v)) {
+                RCLCPP_ERROR(this->get_logger(), "NaN in trajectory!");
+                return false;
+            }
+        }
+    }
+
+    traj_pub_->publish(traj);
+
+    rclcpp::Duration t(traj.points.back().time_from_start);
+    double total_time = t.seconds();
+
+    // rclcpp::sleep_for(
+    //     std::chrono::milliseconds((int)(total_time * 1000) + 200));
+
+    return true;
 }
 
 int main(int argc, char **argv)
 {
     rclcpp::init(argc, argv);
-
     auto node = std::make_shared<MoveItBridge>();
-    node->init_move_group();  // 延迟初始化 MoveGroupInterface
     rclcpp::spin(node);
-
     rclcpp::shutdown();
     return 0;
 }

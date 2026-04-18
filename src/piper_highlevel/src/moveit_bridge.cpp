@@ -7,9 +7,8 @@
 
 using std::placeholders::_1;
 
-#include "moveit_bridge.hpp"
+#include "piper_highlevel/moveit_bridge.hpp"
 #include <functional>
-#include <moveit/move_group_interface/move_group_interface.h>
 
 MoveItBridge::MoveItBridge()
 : Node("piper_moveit_bridge")
@@ -17,11 +16,9 @@ MoveItBridge::MoveItBridge()
     this->declare_parameter<std::string>("group_name", "arm");
     group_name_ = this->get_parameter("group_name").as_string();
 
-    // 订阅 /target_pose
     sub_ = this->create_subscription<geometry_msgs::msg::PoseStamped>(
         "/target_pose", 10, std::bind(&MoveItBridge::pose_cb, this, _1));
 
-    // 发布 /joint_states（可视化用）
     pub_ = this->create_publisher<sensor_msgs::msg::JointState>("/joint_states", 10);
 
     timer_ = this->create_wall_timer(
@@ -31,7 +28,6 @@ MoveItBridge::MoveItBridge()
     RCLCPP_INFO(this->get_logger(), "MoveItBridge node created for group '%s'", group_name_.c_str());
 }
 
-// 延迟初始化 MoveGroupInterface
 void MoveItBridge::init_move_group()
 {
     if (move_group_) return;
@@ -53,34 +49,70 @@ void MoveItBridge::pose_cb(const geometry_msgs::msg::PoseStamped::SharedPtr msg)
     RCLCPP_INFO(this->get_logger(), "Received target position");
 
     move_group_->clearPoseTargets();
-
     move_group_->setPoseReferenceFrame(msg->header.frame_id);
 
+    geometry_msgs::msg::Pose target = msg->pose;
+    geometry_msgs::msg::Pose pre_grasp = target;
+    pre_grasp.position.z += 0.05; 
+
     move_group_->setPositionTarget(
-        msg->pose.position.x,
-        msg->pose.position.y,
-        msg->pose.position.z
+        pre_grasp.position.x,
+        pre_grasp.position.y,
+        pre_grasp.position.z
     );
 
-    move_group_->setPlanningTime(5.0);
-
-    moveit::planning_interface::MoveGroupInterface::Plan plan;
-
-    if (move_group_->plan(plan) != moveit::core::MoveItErrorCode::SUCCESS) {
-        RCLCPP_WARN(this->get_logger(), "Plan failed");
+    moveit::planning_interface::MoveGroupInterface::Plan plan1;
+    if (move_group_->plan(plan1) != moveit::core::MoveItErrorCode::SUCCESS) {
+        RCLCPP_WARN(this->get_logger(), "Pre-grasp plan failed");
         busy_ = false;
         return;
     }
 
-    RCLCPP_INFO(this->get_logger(), "Plan success");
+    move_group_->execute(plan1);
+    RCLCPP_INFO(this->get_logger(), "Reached pre-grasp");
 
-    if (move_group_->execute(plan) != moveit::core::MoveItErrorCode::SUCCESS) {
-        RCLCPP_WARN(this->get_logger(), "Execute failed");
+    std::vector<geometry_msgs::msg::Pose> waypoints;
+    waypoints.push_back(target);
+
+    moveit_msgs::msg::RobotTrajectory traj;
+    double fraction = move_group_->computeCartesianPath(
+        waypoints, 0.01, 0.0, traj);
+
+    if (fraction < 0.9) {
+        RCLCPP_WARN(this->get_logger(), "Cartesian path failed");
         busy_ = false;
         return;
     }
 
-    RCLCPP_INFO(this->get_logger(), "Execution done");
+    moveit::planning_interface::MoveGroupInterface::Plan plan2;
+    plan2.trajectory_ = traj;
+    move_group_->execute(plan2);
+
+    RCLCPP_INFO(this->get_logger(), "Approach done");
+
+    rclcpp::sleep_for(std::chrono::milliseconds(500));
+
+    std::vector<geometry_msgs::msg::Pose> lift_waypoints;
+    geometry_msgs::msg::Pose lift_pose = target;
+    lift_pose.position.z += 0.10;
+
+    lift_waypoints.push_back(lift_pose);
+
+    moveit_msgs::msg::RobotTrajectory traj2;
+    fraction = move_group_->computeCartesianPath(
+        lift_waypoints, 0.01, 0.0, traj2);
+
+    if (fraction < 0.9) {
+        RCLCPP_WARN(this->get_logger(), "Lift failed");
+        busy_ = false;
+        return;
+    }
+
+    moveit::planning_interface::MoveGroupInterface::Plan plan3;
+    plan3.trajectory_ = traj2;
+    move_group_->execute(plan3);
+
+    RCLCPP_INFO(this->get_logger(), "Lift done");
 
     busy_ = false;
 }

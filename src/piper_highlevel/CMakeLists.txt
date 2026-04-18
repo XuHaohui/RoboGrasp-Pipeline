@@ -29,7 +29,12 @@ endif()
 
 ament_package()
 
+
 add_executable(moveit_bridge src/moveit_bridge.cpp)
+target_include_directories(moveit_bridge PUBLIC
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+  $<INSTALL_INTERFACE:include>
+)
 ament_target_dependencies(moveit_bridge rclcpp geometry_msgs sensor_msgs moveit_ros_planning_interface moveit_msgs trajectory_msgs)
 
 install(TARGETS

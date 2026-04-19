@@ -3,6 +3,7 @@
 #include <memory>
 #include <string>
 #include <vector>
+#include <functional>
 #include "rclcpp/rclcpp.hpp"
 #include "geometry_msgs/msg/pose_stamped.hpp"
 #include "sensor_msgs/msg/joint_state.hpp"
@@ -13,6 +14,7 @@ class MoveItBridge : public rclcpp::Node {
 public:
     MoveItBridge();
     void init_move_group();
+    using RobotAction = std::function<bool()>;
 
 private:
     // 回调函数
@@ -22,7 +24,7 @@ private:
     /**
      * @brief 执行完整的抓取序列   
      */
-    void executeGraspSequence(const geometry_msgs::msg::Pose& target_pose, const std::string& frame_id);
+    void GraspSequence(const geometry_msgs::msg::Pose& target_pose, const std::string& frame_id);
 
     /**
      * @brief 控制夹爪开合
@@ -38,11 +40,6 @@ private:
      * @brief 笛卡尔直线移动
      */
     bool cartesianMove(const geometry_msgs::msg::Pose& target_pose);
-
-    /**
-     * @brief 执行规划好的路径并处理错误
-     */
-    bool executePlan(const moveit::planning_interface::MoveGroupInterface::Plan& plan);
 
     std::string group_name_;
     std::shared_ptr<moveit::planning_interface::MoveGroupInterface> move_group_;

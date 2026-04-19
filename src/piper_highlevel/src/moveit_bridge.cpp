@@ -17,7 +17,6 @@ MoveItBridge::MoveItBridge()
 
     sub_ = this->create_subscription<geometry_msgs::msg::PoseStamped>("/target_pose", 10, std::bind(&MoveItBridge::pose_cb, this, _1));
     pub_ = this->create_publisher<sensor_msgs::msg::JointState>("/joint_states", 10);
-    traj_pub_ = this->create_publisher<trajectory_msgs::msg::JointTrajectory>("/joint_trajectory", 10);
 
     timer_ = this->create_wall_timer(
         std::chrono::milliseconds(500),
@@ -55,58 +54,50 @@ void MoveItBridge::pose_cb(const geometry_msgs::msg::PoseStamped::SharedPtr msg)
 
     busy_ = true;
 
-    executeGraspSequence(msg->pose, msg->header.frame_id);
+    GraspSequence(msg->pose, msg->header.frame_id);
 
     busy_ = false;
 }
 
-void MoveItBridge::executeGraspSequence(const geometry_msgs::msg::Pose& target_pose, const std::string& frame_id)
+void MoveItBridge::GraspSequence(const geometry_msgs::msg::Pose& target_pose, const std::string& frame_id)
 {
     move_group_->setPoseReferenceFrame(frame_id);
     move_group_->setMaxVelocityScalingFactor(0.2);
     move_group_->setMaxAccelerationScalingFactor(0.2);
 
-    // 1.张开加爪
-    if (!controlGripper(true)) {
-        RCLCPP_ERROR(this->get_logger(), "Failed to open gripper");
-        return;
-    }
-    rclcpp::sleep_for(std::chrono::seconds(1)); 
+    std::vector<RobotAction> task_queue;
 
-    // 2. 移动到预抓取位姿 (Pre-grasp)
-    geometry_msgs::msg::Pose pre_grasp = target_pose;
-    pre_grasp.position.z += 0.05; 
-    if (!moveToPose(pre_grasp)) {
-        RCLCPP_ERROR(this->get_logger(), "Pre-grasp plan/execution failed");
-        return;
-    }
-    RCLCPP_INFO(this->get_logger(), "Reached pre-grasp");
+    // 1. 封装动作：张开夹爪
+    task_queue.push_back([this]() { 
+        return controlGripper(true); 
+    });
 
-    // 3. 笛卡尔运动接近目标 (Approach)
-    if (!cartesianMove(target_pose)) {
-        RCLCPP_ERROR(this->get_logger(), "Approach Cartesian path failed");
-        return;
-    }
-    RCLCPP_INFO(this->get_logger(), "Approach done");
+    // 2. 封装动作：移动到预抓取
+    task_queue.push_back([this, target_pose, frame_id]() {
+        geometry_msgs::msg::Pose p = target_pose;
+        p.position.z += 0.08;
+        move_group_->setPoseReferenceFrame(frame_id);
+        return moveToPose(p);
+    });
 
-    rclcpp::sleep_for(std::chrono::milliseconds(500));
+    // 3. 封装动作：直线下降
+    task_queue.push_back([this, target_pose]() {
+        return cartesianMove(target_pose);
+    });
 
-    // 4. 关闭夹爪抓取 (Grasp)
-    if (!controlGripper(false)) {
-        RCLCPP_ERROR(this->get_logger(), "Failed to close gripper");
-        return;
-    }
-    rclcpp::sleep_for(std::chrono::seconds(1));
+    // 4. 封装动作：闭合夹爪
+    task_queue.push_back([this]() {
+        return controlGripper(false);
+    });
 
-    // 5. 抬起目标 (Lift)
-    geometry_msgs::msg::Pose lift_pose = target_pose;
-    lift_pose.position.z += 0.10;
-    if (!cartesianMove(lift_pose)) {
-        RCLCPP_ERROR(this->get_logger(), "Lift Cartesian path failed");
-        return;
+    for (size_t i = 0; i < task_queue.size(); ++i) {
+        RCLCPP_INFO(this->get_logger(), "Executing Stage %zu...", i);
+
+        move_group_->setStartStateToCurrentState();
+        task_queue[i]();
+
+        rclcpp::sleep_for(std::chrono::milliseconds(100));
     }
-    moveToPose(lift_pose);  
-    RCLCPP_INFO(this->get_logger(), "Lift done");
 }
 
 bool MoveItBridge::controlGripper(bool open)
@@ -118,7 +109,7 @@ bool MoveItBridge::controlGripper(bool open)
     moveit::planning_interface::MoveGroupInterface::Plan plan;
     if (gripper_group_->plan(plan) == moveit::core::MoveItErrorCode::SUCCESS) {
         RCLCPP_INFO(this->get_logger(), "Gripper plan success, executing...");
-        return executePlan(plan);
+        return gripper_group_->execute(plan) == moveit::core::MoveItErrorCode::SUCCESS;
     } else {
         RCLCPP_ERROR(this->get_logger(), "Gripper planning failed!");
         return false;
@@ -140,7 +131,7 @@ bool MoveItBridge::moveToPose(const geometry_msgs::msg::Pose& pose)
         return false;
     }
 
-    return executePlan(plan);
+    return move_group_->execute(plan) == moveit::core::MoveItErrorCode::SUCCESS;
 }
 
 bool MoveItBridge::cartesianMove(const geometry_msgs::msg::Pose& target_pose)
@@ -156,41 +147,7 @@ bool MoveItBridge::cartesianMove(const geometry_msgs::msg::Pose& target_pose)
         return false;
     }
 
-    moveit::planning_interface::MoveGroupInterface::Plan plan;
-    plan.trajectory_ = traj;
-    return executePlan(plan);
-}
-
-bool MoveItBridge::executePlan(
-    const moveit::planning_interface::MoveGroupInterface::Plan& plan)
-{
-    auto traj = plan.trajectory_.joint_trajectory;
-
-    double scale = 2.0;
-
-    for (auto& p : traj.points) {
-        rclcpp::Duration t(p.time_from_start);   
-        double new_t = t.seconds() * scale;
-
-        p.time_from_start = rclcpp::Duration::from_seconds(new_t);
-    }
-
-    for (auto& p : traj.points) {
-        for (auto& v : p.positions) {
-            if (std::isnan(v)) {
-                RCLCPP_ERROR(this->get_logger(), "NaN in trajectory!");
-                return false;
-            }
-        }
-    }
-
-    traj_pub_->publish(traj);
-
-    rclcpp::Duration t(traj.points.back().time_from_start);
-    double total_time = t.seconds();
-    rclcpp::sleep_for(std::chrono::milliseconds((int)(total_time * 1000) + 200));
-
-    return true;
+    return move_group_->execute(traj) == moveit::core::MoveItErrorCode::SUCCESS;
 }
 
 int main(int argc, char **argv)

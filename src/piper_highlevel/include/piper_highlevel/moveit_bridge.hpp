@@ -20,9 +20,14 @@ private:
 
     // 核心功能拆分
     /**
-     * @brief 执行完整的抓取序列：预抓取 -> 接近 -> 抬起
+     * @brief 执行完整的抓取序列   
      */
     void executeGraspSequence(const geometry_msgs::msg::Pose& target_pose, const std::string& frame_id);
+
+    /**
+     * @brief 控制夹爪开合
+     */
+    bool controlGripper(bool open);
 
     /**
      * @brief 移动到指定位姿（标准关节规划/自由规划）
@@ -41,6 +46,7 @@ private:
 
     std::string group_name_;
     std::shared_ptr<moveit::planning_interface::MoveGroupInterface> move_group_;
+    std::shared_ptr<moveit::planning_interface::MoveGroupInterface> gripper_group_;
     rclcpp::Subscription<geometry_msgs::msg::PoseStamped>::SharedPtr sub_;
     rclcpp::Publisher<sensor_msgs::msg::JointState>::SharedPtr pub_;
     rclcpp::Publisher<trajectory_msgs::msg::JointTrajectory>::SharedPtr traj_pub_;

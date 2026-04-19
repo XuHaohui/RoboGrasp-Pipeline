@@ -31,6 +31,7 @@ void MoveItBridge::init_move_group()
 
     try {
         move_group_ = std::make_shared<moveit::planning_interface::MoveGroupInterface>(this->shared_from_this(), group_name_);
+        gripper_group_ = std::make_shared<moveit::planning_interface::MoveGroupInterface>(this->shared_from_this(), "gripper");
         move_group_->setPlanningTime(10.0);
         move_group_->setPlannerId("RRTConnectkConfigDefault");
         RCLCPP_INFO(this->get_logger(), "MoveGroupInterface initialized successfully");
@@ -65,7 +66,14 @@ void MoveItBridge::executeGraspSequence(const geometry_msgs::msg::Pose& target_p
     move_group_->setMaxVelocityScalingFactor(0.2);
     move_group_->setMaxAccelerationScalingFactor(0.2);
 
-    // 1. 移动到预抓取位姿 (Pre-grasp)
+    // 1.张开加爪
+    if (!controlGripper(true)) {
+        RCLCPP_ERROR(this->get_logger(), "Failed to open gripper");
+        return;
+    }
+    rclcpp::sleep_for(std::chrono::seconds(1)); 
+
+    // 2. 移动到预抓取位姿 (Pre-grasp)
     geometry_msgs::msg::Pose pre_grasp = target_pose;
     pre_grasp.position.z += 0.05; 
     if (!moveToPose(pre_grasp)) {
@@ -74,7 +82,7 @@ void MoveItBridge::executeGraspSequence(const geometry_msgs::msg::Pose& target_p
     }
     RCLCPP_INFO(this->get_logger(), "Reached pre-grasp");
 
-    // 2. 笛卡尔运动接近目标 (Approach)
+    // 3. 笛卡尔运动接近目标 (Approach)
     if (!cartesianMove(target_pose)) {
         RCLCPP_ERROR(this->get_logger(), "Approach Cartesian path failed");
         return;
@@ -83,7 +91,14 @@ void MoveItBridge::executeGraspSequence(const geometry_msgs::msg::Pose& target_p
 
     rclcpp::sleep_for(std::chrono::milliseconds(500));
 
-    // 3. 抬起目标 (Lift)
+    // 4. 关闭夹爪抓取 (Grasp)
+    if (!controlGripper(false)) {
+        RCLCPP_ERROR(this->get_logger(), "Failed to close gripper");
+        return;
+    }
+    rclcpp::sleep_for(std::chrono::seconds(1));
+
+    // 5. 抬起目标 (Lift)
     geometry_msgs::msg::Pose lift_pose = target_pose;
     lift_pose.position.z += 0.10;
     if (!cartesianMove(lift_pose)) {
@@ -92,6 +107,22 @@ void MoveItBridge::executeGraspSequence(const geometry_msgs::msg::Pose& target_p
     }
     moveToPose(lift_pose);  
     RCLCPP_INFO(this->get_logger(), "Lift done");
+}
+
+bool MoveItBridge::controlGripper(bool open)
+{
+    if (!gripper_group_) return false;
+
+    gripper_group_->setNamedTarget(open ? "open" : "close");
+
+    moveit::planning_interface::MoveGroupInterface::Plan plan;
+    if (gripper_group_->plan(plan) == moveit::core::MoveItErrorCode::SUCCESS) {
+        RCLCPP_INFO(this->get_logger(), "Gripper plan success, executing...");
+        return executePlan(plan);
+    } else {
+        RCLCPP_ERROR(this->get_logger(), "Gripper planning failed!");
+        return false;
+    }
 }
 
 bool MoveItBridge::moveToPose(const geometry_msgs::msg::Pose& pose)
@@ -157,9 +188,7 @@ bool MoveItBridge::executePlan(
 
     rclcpp::Duration t(traj.points.back().time_from_start);
     double total_time = t.seconds();
-
-    // rclcpp::sleep_for(
-    //     std::chrono::milliseconds((int)(total_time * 1000) + 200));
+    rclcpp::sleep_for(std::chrono::milliseconds((int)(total_time * 1000) + 200));
 
     return true;
 }

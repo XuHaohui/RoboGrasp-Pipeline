@@ -5,6 +5,9 @@
 #include "geometry_msgs/msg/pose_stamped.hpp"
 #include "sensor_msgs/msg/joint_state.hpp"
 #include <moveit/move_group_interface/move_group_interface.h>
+#include <geometric_shapes/shape_operations.h>
+#include <shape_msgs/msg/solid_primitive.hpp>
+#include <moveit_msgs/msg/collision_object.hpp>
 #include "piper_highlevel/moveit_bridge.hpp"
 
 using std::placeholders::_1;
@@ -54,9 +57,38 @@ void MoveItBridge::pose_cb(const geometry_msgs::msg::PoseStamped::SharedPtr msg)
 
     busy_ = true;
 
+    addCylinder(msg->pose, msg->header.frame_id);
+
     GraspSequence(msg->pose, msg->header.frame_id);
 
     busy_ = false;
+}
+
+void MoveItBridge::addCylinder(const geometry_msgs::msg::Pose& bottom_pose, const std::string& frame_id)
+{
+    moveit_msgs::msg::CollisionObject collision_object;
+    collision_object.header.frame_id = frame_id;
+    collision_object.id = "target_cylinder";
+
+    shape_msgs::msg::SolidPrimitive primitive;
+    primitive.type = primitive.CYLINDER;
+    primitive.dimensions.resize(2);
+    primitive.dimensions[primitive.CYLINDER_HEIGHT] = CYLINDER_H;
+    primitive.dimensions[primitive.CYLINDER_RADIUS] = CYLINDER_R;
+
+    geometry_msgs::msg::Pose cylinder_pose = bottom_pose;
+    // MoveIt 中圆柱体的中心是在其高度的一半处
+    cylinder_pose.position.z += CYLINDER_H / 2.0;
+
+    collision_object.primitives.push_back(primitive);
+    collision_object.primitive_poses.push_back(cylinder_pose);
+    collision_object.operation = collision_object.ADD;
+
+    std::vector<moveit_msgs::msg::CollisionObject> collision_objects;
+    collision_objects.push_back(collision_object);
+
+    RCLCPP_INFO(this->get_logger(), "Adding cylinder to the scene");
+    planning_scene_interface_.addCollisionObjects(collision_objects);
 }
 
 void MoveItBridge::GraspSequence(const geometry_msgs::msg::Pose& target_pose, const std::string& frame_id)
@@ -75,14 +107,16 @@ void MoveItBridge::GraspSequence(const geometry_msgs::msg::Pose& target_pose, co
     // 2. 封装动作：移动到预抓取
     task_queue.push_back([this, target_pose, frame_id]() {
         geometry_msgs::msg::Pose p = target_pose;
-        p.position.z += 0.08;
+        p.position.z += (CYLINDER_H + 0.05); // 预抓取点在物体上方
         move_group_->setPoseReferenceFrame(frame_id);
         return moveToPose(p);
     });
 
     // 3. 封装动作：直线下降
     task_queue.push_back([this, target_pose]() {
-        return cartesianMove(target_pose);
+        geometry_msgs::msg::Pose p = target_pose;
+        p.position.z += CYLINDER_H / 2.0; // 移动到圆柱体中心高度进行抓取
+        return cartesianMove(p);
     });
 
     // 4. 封装动作：闭合夹爪

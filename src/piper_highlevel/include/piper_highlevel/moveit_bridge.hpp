@@ -8,7 +8,11 @@
 #include "geometry_msgs/msg/pose_stamped.hpp"
 #include "sensor_msgs/msg/joint_state.hpp"
 #include "moveit/move_group_interface/move_group_interface.h"
+#include "moveit/planning_scene_interface/planning_scene_interface.h"
 #include "trajectory_msgs/msg/joint_trajectory.hpp"
+
+const double CYLINDER_H = 0.12;
+const double CYLINDER_R = 0.02;
 
 class MoveItBridge : public rclcpp::Node {
 public:
@@ -41,9 +45,12 @@ private:
      */
     bool cartesianMove(const geometry_msgs::msg::Pose& target_pose);
 
+    void addCylinder(const geometry_msgs::msg::Pose& bottom_pose, const std::string& frame_id);
+
     std::string group_name_;
     std::shared_ptr<moveit::planning_interface::MoveGroupInterface> move_group_;
     std::shared_ptr<moveit::planning_interface::MoveGroupInterface> gripper_group_;
+    moveit::planning_interface::PlanningSceneInterface planning_scene_interface_;
     rclcpp::Subscription<geometry_msgs::msg::PoseStamped>::SharedPtr sub_;
     rclcpp::Publisher<sensor_msgs::msg::JointState>::SharedPtr pub_;
     rclcpp::Publisher<trajectory_msgs::msg::JointTrajectory>::SharedPtr traj_pub_;

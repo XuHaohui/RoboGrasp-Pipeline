@@ -112,13 +112,13 @@ void MoveItBridge::GraspSequence(const geometry_msgs::msg::Pose& target_pose, co
         geometry_msgs::msg::Pose p = target_pose;
         p.position.z += (CYLINDER_H + 0.05); // 预抓取点在物体上方
         move_group_->setPoseReferenceFrame(frame_id);
-        return moveToPose(p);
+        return moveToPoseSampling(p);
     });
 
     // 3. 封装动作：直线下降
     task_queue.push_back([this, target_pose,frame_id]() {
         geometry_msgs::msg::Pose p = target_pose;
-        p.position.z += CYLINDER_H +0.2; // 移动到圆柱体中心高度进行抓取
+        p.position.z += CYLINDER_H +0.1; // 移动到圆柱体中心高度进行抓取
         move_group_->setPoseReferenceFrame(frame_id);
         return cartesianMove(p);
     });
@@ -154,90 +154,97 @@ bool MoveItBridge::controlGripper(bool open)
     }
 }
 
-bool MoveItBridge::moveToPose(const geometry_msgs::msg::Pose& pose)
+std::vector<geometry_msgs::msg::Pose> generateGraspCandidates(
+    const geometry_msgs::msg::Pose& base_pose)
 {
-    move_group_->clearPoseTargets();
-    move_group_->setGoalPositionTolerance(0.005);   // 5mm
-    move_group_->setGoalOrientationTolerance(0.1); // ~3°
-    move_group_->setPositionTarget(
-        pose.position.x,
-        pose.position.y,
-        pose.position.z
-    );
-    // geometry_msgs::msg::Pose target_pose;
-    // target_pose.position.x = pose.position.x;
-    // target_pose.position.y = pose.position.y;
-    // target_pose.position.z = pose.position.z;
-    // tf2::Quaternion q;
-    // q.setRPY(0, -M_PI/2, 0);
-    // target_pose.orientation = tf2::toMsg(q);
+    std::vector<geometry_msgs::msg::Pose> candidates;
 
-    moveit_msgs::msg::OrientationConstraint ocm;
-    ocm.link_name = "gripper_base";   // 你的末端
-    ocm.header.frame_id = "base_link";
+     double tcp_offset = 0.1358;
 
-    tf2::Quaternion q;
-    q.setRPY(M_PI, 0, 0);  // 期望方向
-    ocm.orientation = tf2::toMsg(q);
+    for (int i = 0; i < 8; ++i) {   
+        double yaw = i * M_PI / 8.0;
 
-    // 👇 给自由度（关键！）
-    ocm.absolute_x_axis_tolerance = 0.5;
-    ocm.absolute_y_axis_tolerance = 0.5;
-    ocm.absolute_z_axis_tolerance = M_PI;
+        tf2::Quaternion q;
+        q.setRPY(0, M_PI / 2.0, yaw);   
 
-    ocm.weight = 1.0;
+        tf2::Vector3 offset_local(0, 0,-tcp_offset);
 
-    moveit_msgs::msg::Constraints constraints;
-    constraints.orientation_constraints.push_back(ocm);
+        tf2::Vector3 offset_world = tf2::quatRotate(q, offset_local);
 
-    move_group_->setPathConstraints(constraints);
-    //move_group_->setPoseTarget(target_pose);
-    move_group_->setStartStateToCurrentState();
+        geometry_msgs::msg::Pose p;
 
-    moveit::planning_interface::MoveGroupInterface::Plan plan;
-    auto result = move_group_->plan(plan);
-    if (result != moveit::core::MoveItErrorCode::SUCCESS) {
-        std::string error_msg;
-        switch (result.val) {
-            case MoveItErrorCodes::PLANNING_FAILED: error_msg = "PLANNING_FAILED"; break;
-            case MoveItErrorCodes::INVALID_MOTION_PLAN: error_msg = "INVALID_MOTION_PLAN"; break;
-            case MoveItErrorCodes::MOTION_PLAN_INVALIDATED_BY_ENVIRONMENT_CHANGE: error_msg = "MOTION_PLAN_INVALIDATED_BY_ENVIRONMENT_CHANGE"; break;
-            case MoveItErrorCodes::CONTROL_FAILED: error_msg = "CONTROL_FAILED"; break;
-            case MoveItErrorCodes::UNABLE_TO_AQUIRE_SENSOR_DATA: error_msg = "UNABLE_TO_AQUIRE_SENSOR_DATA"; break;
-            case MoveItErrorCodes::TIMED_OUT: error_msg = "TIMED_OUT"; break;
-            case MoveItErrorCodes::PREEMPTED: error_msg = "PREEMPTED"; break;
-            case MoveItErrorCodes::START_STATE_IN_COLLISION: error_msg = "START_STATE_IN_COLLISION"; break;
-            case MoveItErrorCodes::START_STATE_VIOLATES_PATH_CONSTRAINTS: error_msg = "START_STATE_VIOLATES_PATH_CONSTRAINTS"; break;
-            case MoveItErrorCodes::START_STATE_INVALID: error_msg = "START_STATE_INVALID"; break;
-            case MoveItErrorCodes::GOAL_IN_COLLISION: error_msg = "GOAL_IN_COLLISION"; break;
-            case MoveItErrorCodes::GOAL_VIOLATES_PATH_CONSTRAINTS: error_msg = "GOAL_VIOLATES_PATH_CONSTRAINTS"; break;
-            case MoveItErrorCodes::GOAL_CONSTRAINTS_VIOLATED: error_msg = "GOAL_CONSTRAINTS_VIOLATED"; break;
-            case MoveItErrorCodes::GOAL_STATE_INVALID: 
-            {
-                // 获取当前设置的目标位姿
-                auto targets = move_group_->getPoseTargets();
-                std::string target_info = "Unknown target";
-                if (!targets.empty()) {
-                    auto p = targets[0].pose;
-                    target_info = "Position: [" + std::to_string(p.position.x) + ", " + 
-                                  std::to_string(p.position.y) + ", " + std::to_string(p.position.z) + "]";
-                }
-                error_msg = "GOAL_STATE_INVALID (IK No Solution or Collision at " + target_info + ")";
-                break;
-            }
-            case MoveItErrorCodes::UNRECOGNIZED_GOAL_TYPE: error_msg = "UNRECOGNIZED_GOAL_TYPE"; break;
-            case MoveItErrorCodes::INVALID_GROUP_NAME: error_msg = "INVALID_GROUP_NAME"; break;
-            case MoveItErrorCodes::INVALID_GOAL_CONSTRAINTS: error_msg = "INVALID_GOAL_CONSTRAINTS"; break;
-            case MoveItErrorCodes::INVALID_ROBOT_STATE: error_msg = "INVALID_ROBOT_STATE"; break;
-            case MoveItErrorCodes::INVALID_LINK_NAME: error_msg = "INVALID_LINK_NAME"; break;
-            case MoveItErrorCodes::NO_IK_SOLUTION: error_msg = "NO_IK_SOLUTION"; break;
-            default: error_msg = "UNKNOWN_ERROR"; break;
-        }
-        RCLCPP_ERROR(this->get_logger(), "Move to pose planning failed! Error: %s (code: %d)", error_msg.c_str(), result.val);
-        return false;
+        p.position.x = base_pose.position.x + offset_world.x();
+        p.position.y = base_pose.position.y + offset_world.y();
+        p.position.z = base_pose.position.z + offset_world.z();
+
+        //geometry_msgs::msg::Pose p = base_pose;
+        p.orientation = tf2::toMsg(q);
+
+        candidates.push_back(p);
     }
 
-    return move_group_->execute(plan) == moveit::core::MoveItErrorCode::SUCCESS;
+    return candidates;
+}
+
+bool MoveItBridge::moveToPoseSampling(const geometry_msgs::msg::Pose& pose)
+{
+    auto candidates = generateGraspCandidates(pose);
+
+    for (auto& target : candidates) {
+        move_group_->clearPoseTargets();
+        move_group_->setStartStateToCurrentState();
+        move_group_->setPoseTarget(target);
+
+        moveit::planning_interface::MoveGroupInterface::Plan plan;
+        auto result = move_group_->plan(plan);
+
+        if (result != moveit::core::MoveItErrorCode::SUCCESS) {
+            std::string error_msg;
+            switch (result.val) {
+                case MoveItErrorCodes::PLANNING_FAILED: error_msg = "PLANNING_FAILED"; break;
+                case MoveItErrorCodes::INVALID_MOTION_PLAN: error_msg = "INVALID_MOTION_PLAN"; break;
+                case MoveItErrorCodes::MOTION_PLAN_INVALIDATED_BY_ENVIRONMENT_CHANGE: error_msg = "MOTION_PLAN_INVALIDATED_BY_ENVIRONMENT_CHANGE"; break;
+                case MoveItErrorCodes::CONTROL_FAILED: error_msg = "CONTROL_FAILED"; break;
+                case MoveItErrorCodes::UNABLE_TO_AQUIRE_SENSOR_DATA: error_msg = "UNABLE_TO_AQUIRE_SENSOR_DATA"; break;
+                case MoveItErrorCodes::TIMED_OUT: error_msg = "TIMED_OUT"; break;
+                case MoveItErrorCodes::PREEMPTED: error_msg = "PREEMPTED"; break;
+                case MoveItErrorCodes::START_STATE_IN_COLLISION: error_msg = "START_STATE_IN_COLLISION"; break;
+                case MoveItErrorCodes::START_STATE_VIOLATES_PATH_CONSTRAINTS: error_msg = "START_STATE_VIOLATES_PATH_CONSTRAINTS"; break;
+                case MoveItErrorCodes::START_STATE_INVALID: error_msg = "START_STATE_INVALID"; break;
+                case MoveItErrorCodes::GOAL_IN_COLLISION: error_msg = "GOAL_IN_COLLISION"; break;
+                case MoveItErrorCodes::GOAL_VIOLATES_PATH_CONSTRAINTS: error_msg = "GOAL_VIOLATES_PATH_CONSTRAINTS"; break;
+                case MoveItErrorCodes::GOAL_CONSTRAINTS_VIOLATED: error_msg = "GOAL_CONSTRAINTS_VIOLATED"; break;
+                case MoveItErrorCodes::GOAL_STATE_INVALID: {
+                    // 获取当前设置的目标位姿
+                    auto targets = move_group_->getPoseTargets();
+                    std::string target_info = "Unknown target";
+                    if (!targets.empty()) {
+                        auto p = targets[0].pose;
+                        target_info = "Position: [" + std::to_string(p.position.x) + ", " + 
+                                      std::to_string(p.position.y) + ", " + std::to_string(p.position.z) + "]";
+                    }
+                    error_msg = "GOAL_STATE_INVALID (IK No Solution or Collision at " + target_info + ")";
+                    break;
+                }
+                case MoveItErrorCodes::UNRECOGNIZED_GOAL_TYPE: error_msg = "UNRECOGNIZED_GOAL_TYPE"; break;
+                case MoveItErrorCodes::INVALID_GROUP_NAME: error_msg = "INVALID_GROUP_NAME"; break;
+                case MoveItErrorCodes::INVALID_GOAL_CONSTRAINTS: error_msg = "INVALID_GOAL_CONSTRAINTS"; break;
+                case MoveItErrorCodes::INVALID_ROBOT_STATE: error_msg = "INVALID_ROBOT_STATE"; break;
+                case MoveItErrorCodes::INVALID_LINK_NAME: error_msg = "INVALID_LINK_NAME"; break;
+                case MoveItErrorCodes::NO_IK_SOLUTION: error_msg = "NO_IK_SOLUTION"; break;
+                default: error_msg = "UNKNOWN_ERROR"; break;
+            }
+            RCLCPP_ERROR(this->get_logger(), "Move to pose planning failed! Error: %s (code: %d)", error_msg.c_str(), result.val);
+            RCLCPP_WARN(this->get_logger(), "Candidate failed, trying next...");
+            continue;
+        }
+
+        RCLCPP_INFO(this->get_logger(), "Found valid grasp!");
+        return move_group_->execute(plan) == moveit::core::MoveItErrorCode::SUCCESS;
+    }
+
+    RCLCPP_ERROR(this->get_logger(), "No valid grasp found!");
+    return false;
 }
 
 bool MoveItBridge::cartesianMove(const geometry_msgs::msg::Pose& target_pose)

@@ -12,13 +12,18 @@
 #include "trajectory_msgs/msg/joint_trajectory.hpp"
 
 const double CYLINDER_H = 0.10;
-const double CYLINDER_R = 0.02;
+const double CYLINDER_R = 0.01;
 
 class MoveItBridge : public rclcpp::Node {
 public:
     MoveItBridge();
     void init_move_group();
     using RobotAction = std::function<bool()>;
+
+    /**
+     * @brief 采样多个姿态进行运动规划
+     */
+    bool moveToPoseSampling(const geometry_msgs::msg::Pose& pose);
 
 private:
     // 回调函数
@@ -46,6 +51,9 @@ private:
     bool cartesianMove(const geometry_msgs::msg::Pose& target_pose);
 
     void addCylinder(const geometry_msgs::msg::Pose& bottom_pose, const std::string& frame_id);
+
+// grasp candidates 采样函数声明
+friend std::vector<geometry_msgs::msg::Pose> generateGraspCandidates(const geometry_msgs::msg::Pose& base_pose);
 
     std::string group_name_;
     std::shared_ptr<moveit::planning_interface::MoveGroupInterface> move_group_;

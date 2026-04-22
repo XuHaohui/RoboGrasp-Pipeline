@@ -11,7 +11,7 @@
 #include "moveit/planning_scene_interface/planning_scene_interface.h"
 #include "trajectory_msgs/msg/joint_trajectory.hpp"
 
-const double CYLINDER_H = 0.12;
+const double CYLINDER_H = 0.10;
 const double CYLINDER_R = 0.02;
 
 class MoveItBridge : public rclcpp::Node {

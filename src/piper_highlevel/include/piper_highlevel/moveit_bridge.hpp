@@ -65,6 +65,9 @@ private:
 // grasp candidates 采样函数声明
 friend std::vector<geometry_msgs::msg::Pose> generateGraspCandidates(const geometry_msgs::msg::Pose& base_pose);
 
+    // 补充声明：发布关节状态
+
+    rclcpp::CallbackGroup::SharedPtr cb_group_;
     std::string group_name_;
     std::shared_ptr<moveit::planning_interface::MoveGroupInterface> move_group_;
     std::shared_ptr<moveit::planning_interface::MoveGroupInterface> gripper_group_;
@@ -79,6 +82,4 @@ friend std::vector<geometry_msgs::msg::Pose> generateGraspCandidates(const geome
     std::vector<double> full_joint_state_ = std::vector<double>(8, 0.0);
 
     bool busy_ = false;
-    // 补充声明：发布关节状态
-    void publishJointState(const std::vector<double>& positions, bool is_gripper);
 };

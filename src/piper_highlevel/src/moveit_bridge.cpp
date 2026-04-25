@@ -72,7 +72,7 @@ void MoveItBridge::pose_cb(const geometry_msgs::msg::PoseStamped::SharedPtr msg)
     busy_ = true;
 
     addCylinder(msg->pose, msg->header.frame_id);
-
+    addHomeEntity(msg->header.frame_id);
     GraspSequence(msg->pose, msg->header.frame_id);
 
     busy_ = false;
@@ -105,6 +105,37 @@ void MoveItBridge::addCylinder(const geometry_msgs::msg::Pose& bottom_pose, cons
     planning_scene_interface_.addCollisionObjects(collision_objects);
 }
 
+void MoveItBridge::addHomeEntity(const std::string& frame_id)
+{
+    moveit_msgs::msg::CollisionObject collision_object;
+    collision_object.header.frame_id = frame_id;
+    collision_object.id = "home";
+
+    shape_msgs::msg::SolidPrimitive primitive;
+    primitive.type = primitive.BOX;
+    primitive.dimensions.resize(3);
+    primitive.dimensions[primitive.BOX_X] = HOME_X;
+    primitive.dimensions[primitive.BOX_Y] = HOME_Y;
+    primitive.dimensions[primitive.BOX_Z] = 0.05; 
+
+    geometry_msgs::msg::Pose box_pose;
+    box_pose.position.x = 0.2; // 放置在某个固定位置，或者根据需要调整
+    box_pose.position.y = 0.2;
+    // 实体在 z 轴以下：中心点在 -thickness/2
+    box_pose.position.z = -0.025; 
+    box_pose.orientation.w = 1.0;
+
+    collision_object.primitives.push_back(primitive);
+    collision_object.primitive_poses.push_back(box_pose);
+    collision_object.operation = collision_object.ADD;
+
+    std::vector<moveit_msgs::msg::CollisionObject> collision_objects;
+    collision_objects.push_back(collision_object);
+
+    RCLCPP_INFO(this->get_logger(), "Adding home entity to the scene (below Z=0)");
+    planning_scene_interface_.addCollisionObjects(collision_objects);
+}
+
 void MoveItBridge::GraspSequence(const geometry_msgs::msg::Pose& target_pose, const std::string& frame_id)
 {
     move_group_->setPoseReferenceFrame(frame_id);
@@ -116,21 +147,26 @@ void MoveItBridge::GraspSequence(const geometry_msgs::msg::Pose& target_pose, co
     // 1. 封装动作：张开夹爪
     move_group_->setStartState(*move_group_->getCurrentState());
     task_queue.push_back([this]() { 
-        return controlGripper(true); 
+        RCLCPP_INFO(this->get_logger(), "Step: Opening Gripper...");
+        bool success = controlGripper(true);
+        return success; 
     });
 
     // 2. 封装动作：移动到预抓取
     move_group_->setStartState(*move_group_->getCurrentState());
     task_queue.push_back([this, target_pose, frame_id]() {
+        RCLCPP_INFO(this->get_logger(), "Step: Moving to Pre-Grasp Pose...");
         geometry_msgs::msg::Pose p = target_pose;
         p.position.z += (CYLINDER_H + 0.05); // 预抓取点在物体上方
         move_group_->setPoseReferenceFrame(frame_id);
-        return moveToPoseSampling(p);
+        bool success = moveToPoseSampling(p);
+        return success;
     });
 
-    //2.5 
+    //2.5. 封装动作：允许夹爪与物体发生碰撞（规划时忽略碰撞） 
     move_group_->setStartState(*move_group_->getCurrentState());
     task_queue.push_back([this]() {
+        RCLCPP_INFO(this->get_logger(), "Step: Allowing Gripper-Object Collision for Planning...");
         allowGripperCollision(true);
         return true;
     });
@@ -138,6 +174,7 @@ void MoveItBridge::GraspSequence(const geometry_msgs::msg::Pose& target_pose, co
     // 3. 封装动作：直线下降
     move_group_->setStartState(*move_group_->getCurrentState());
     task_queue.push_back([this, target_pose,frame_id]() {
+        RCLCPP_INFO(this->get_logger(), "Step: Cartesian Move to Grasp Pose...");
 
         auto current_pose_stamped = move_group_->getCurrentPose();
         geometry_msgs::msg::Pose current_p = current_pose_stamped.pose;
@@ -146,15 +183,52 @@ void MoveItBridge::GraspSequence(const geometry_msgs::msg::Pose& target_pose, co
         p.position.z = target_pose.position.z + (CYLINDER_H / 2.0); 
 
         move_group_->setPoseReferenceFrame(frame_id);
-        return cartesianMove(p);
-        //return moveToPoseSampling(p);
+        bool success = cartesianMove(p);
+        return success;
     });
 
     // 4. 封装动作：闭合夹爪
     move_group_->setStartState(*move_group_->getCurrentState());
     task_queue.push_back([this]() {
-        return closeGripperToObject(CYLINDER_R*2);
+        RCLCPP_INFO(this->get_logger(), "Step: Closing Gripper...");
+        bool success = closeGripperToObject(CYLINDER_R*2);
+        return success;
     });
+
+    // 5. 封装动作：逻辑吸附
+    move_group_->setStartState(*move_group_->getCurrentState());
+    task_queue.push_back([this]() {
+        RCLCPP_INFO(this->get_logger(), "Step: Attaching Object...");
+        move_group_->setStartStateToCurrentState();
+        bool success = attachObject(true);
+        if (success) {
+            rclcpp::sleep_for(std::chrono::seconds(2));
+        }
+        return success;
+    });
+
+    //6. 封装动作：抬高物体
+    move_group_->setStartState(*move_group_->getCurrentState());
+    task_queue.push_back([this, target_pose, frame_id]() {
+        geometry_msgs::msg::Pose p = target_pose;
+        p.position.z += (CYLINDER_H + 0.1); // 抬高一点
+        move_group_->setPoseReferenceFrame(frame_id);
+        bool success = cartesianMove(p);
+        return success;
+        //return moveToPoseSampling(p);
+    });
+
+    //7.回到初始位置
+    move_group_->setStartState(*move_group_->getCurrentState());
+    task_queue.push_back([this]() {
+        move_group_->setNamedTarget("home");
+        moveit::planning_interface::MoveGroupInterface::Plan plan;
+        if (move_group_->plan(plan) == moveit::core::MoveItErrorCode::SUCCESS) {
+            return move_group_->execute(plan) == moveit::core::MoveItErrorCode::SUCCESS;
+        }
+        return false;
+    });
+
 
     for (size_t i = 0; i < task_queue.size(); ++i) {
         RCLCPP_INFO(this->get_logger(), "Executing Stage %zu...", i);
@@ -426,6 +500,24 @@ bool MoveItBridge::closeGripperToObject(double object_width)
         return gripper_group_->execute(plan) == moveit::core::MoveItErrorCode::SUCCESS;
     }
     return false;
+}
+
+bool MoveItBridge::attachObject(bool allow_collision)
+{
+    moveit_msgs::msg::AttachedCollisionObject attached_object;
+    attached_object.link_name = "gripper_base"; // 绑定到的 link 名
+    attached_object.object.id = "target_cylinder";
+    attached_object.object.header.frame_id = "gripper_base";
+    if (allow_collision) {
+        attached_object.object.operation = moveit_msgs::msg::CollisionObject::ADD;
+    } else {
+        attached_object.object.operation = moveit_msgs::msg::CollisionObject::REMOVE;
+    }
+
+    attached_object.touch_links = {"link7", "link8", "gripper_base"};
+
+    RCLCPP_INFO(this->get_logger(), "Attaching object to gripper...");
+    return planning_scene_interface_.applyAttachedCollisionObject(attached_object);
 }
 
 int main(int argc, char **argv)

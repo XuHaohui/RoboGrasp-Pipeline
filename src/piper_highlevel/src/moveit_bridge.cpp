@@ -11,6 +11,8 @@
 #include <moveit_msgs/msg/move_it_error_codes.hpp>
 #include "piper_highlevel/moveit_bridge.hpp"
 #include <tf2_geometry_msgs/tf2_geometry_msgs.hpp>
+#include <moveit_msgs/srv/get_planning_scene.hpp>
+#include <moveit_msgs/srv/apply_planning_scene.hpp>
 
 using std::placeholders::_1;
 using moveit_msgs::msg::MoveItErrorCodes;
@@ -23,6 +25,9 @@ MoveItBridge::MoveItBridge()
 
     sub_ = this->create_subscription<geometry_msgs::msg::PoseStamped>("/target_pose", 10, std::bind(&MoveItBridge::pose_cb, this, _1));
     pub_ = this->create_publisher<sensor_msgs::msg::JointState>("/joint_states", 10);
+
+    get_scene_client_ = this->create_client<moveit_msgs::srv::GetPlanningScene>("/get_planning_scene");
+    apply_scene_client_ = this->create_client<moveit_msgs::srv::ApplyPlanningScene>("/apply_planning_scene");
 
     timer_ = this->create_wall_timer(
         std::chrono::milliseconds(500),
@@ -115,12 +120,20 @@ void MoveItBridge::GraspSequence(const geometry_msgs::msg::Pose& target_pose, co
         return moveToPoseSampling(p);
     });
 
+    //2.5 
+    task_queue.push_back([this]() {
+        allowGripperCollision(true);
+        return true;
+    });
+
     // 3. 封装动作：直线下降
     task_queue.push_back([this, target_pose,frame_id]() {
         geometry_msgs::msg::Pose p = target_pose;
-        p.position.z += CYLINDER_H +0.1; // 移动到圆柱体中心高度进行抓取
+        p.position.z += (CYLINDER_H / 2.0)+0.2; 
+
         move_group_->setPoseReferenceFrame(frame_id);
-        return cartesianMove(p);
+        //return cartesianMove(p);
+        return moveToPoseSampling(p);
     });
 
     // 4. 封装动作：闭合夹爪
@@ -147,7 +160,12 @@ bool MoveItBridge::controlGripper(bool open)
     moveit::planning_interface::MoveGroupInterface::Plan plan;
     if (gripper_group_->plan(plan) == moveit::core::MoveItErrorCode::SUCCESS) {
         RCLCPP_INFO(this->get_logger(), "Gripper plan success, executing...");
-        return gripper_group_->execute(plan) == moveit::core::MoveItErrorCode::SUCCESS;
+        if (gripper_group_->execute(plan) == moveit::core::MoveItErrorCode::SUCCESS)
+        {
+            auto current = gripper_group_->getCurrentJointValues();
+            publishJointState(current, true);
+            return true;
+        }
     } else {
         RCLCPP_ERROR(this->get_logger(), "Gripper planning failed!");
         return false;
@@ -159,7 +177,7 @@ std::vector<geometry_msgs::msg::Pose> generateGraspCandidates(
 {
     std::vector<geometry_msgs::msg::Pose> candidates;
 
-     double tcp_offset = 0.1358;
+     double tcp_offset = 0.12;
 
     for (int i = 0; i < 8; ++i) {   
         double yaw = i * M_PI / 8.0;
@@ -200,47 +218,61 @@ bool MoveItBridge::moveToPoseSampling(const geometry_msgs::msg::Pose& pose)
 
         if (result != moveit::core::MoveItErrorCode::SUCCESS) {
             std::string error_msg;
-            switch (result.val) {
-                case MoveItErrorCodes::PLANNING_FAILED: error_msg = "PLANNING_FAILED"; break;
-                case MoveItErrorCodes::INVALID_MOTION_PLAN: error_msg = "INVALID_MOTION_PLAN"; break;
-                case MoveItErrorCodes::MOTION_PLAN_INVALIDATED_BY_ENVIRONMENT_CHANGE: error_msg = "MOTION_PLAN_INVALIDATED_BY_ENVIRONMENT_CHANGE"; break;
-                case MoveItErrorCodes::CONTROL_FAILED: error_msg = "CONTROL_FAILED"; break;
-                case MoveItErrorCodes::UNABLE_TO_AQUIRE_SENSOR_DATA: error_msg = "UNABLE_TO_AQUIRE_SENSOR_DATA"; break;
-                case MoveItErrorCodes::TIMED_OUT: error_msg = "TIMED_OUT"; break;
-                case MoveItErrorCodes::PREEMPTED: error_msg = "PREEMPTED"; break;
-                case MoveItErrorCodes::START_STATE_IN_COLLISION: error_msg = "START_STATE_IN_COLLISION"; break;
-                case MoveItErrorCodes::START_STATE_VIOLATES_PATH_CONSTRAINTS: error_msg = "START_STATE_VIOLATES_PATH_CONSTRAINTS"; break;
-                case MoveItErrorCodes::START_STATE_INVALID: error_msg = "START_STATE_INVALID"; break;
-                case MoveItErrorCodes::GOAL_IN_COLLISION: error_msg = "GOAL_IN_COLLISION"; break;
-                case MoveItErrorCodes::GOAL_VIOLATES_PATH_CONSTRAINTS: error_msg = "GOAL_VIOLATES_PATH_CONSTRAINTS"; break;
-                case MoveItErrorCodes::GOAL_CONSTRAINTS_VIOLATED: error_msg = "GOAL_CONSTRAINTS_VIOLATED"; break;
-                case MoveItErrorCodes::GOAL_STATE_INVALID: {
-                    // 获取当前设置的目标位姿
-                    auto targets = move_group_->getPoseTargets();
-                    std::string target_info = "Unknown target";
-                    if (!targets.empty()) {
-                        auto p = targets[0].pose;
-                        target_info = "Position: [" + std::to_string(p.position.x) + ", " + 
-                                      std::to_string(p.position.y) + ", " + std::to_string(p.position.z) + "]";
-                    }
-                    error_msg = "GOAL_STATE_INVALID (IK No Solution or Collision at " + target_info + ")";
-                    break;
-                }
-                case MoveItErrorCodes::UNRECOGNIZED_GOAL_TYPE: error_msg = "UNRECOGNIZED_GOAL_TYPE"; break;
-                case MoveItErrorCodes::INVALID_GROUP_NAME: error_msg = "INVALID_GROUP_NAME"; break;
-                case MoveItErrorCodes::INVALID_GOAL_CONSTRAINTS: error_msg = "INVALID_GOAL_CONSTRAINTS"; break;
-                case MoveItErrorCodes::INVALID_ROBOT_STATE: error_msg = "INVALID_ROBOT_STATE"; break;
-                case MoveItErrorCodes::INVALID_LINK_NAME: error_msg = "INVALID_LINK_NAME"; break;
-                case MoveItErrorCodes::NO_IK_SOLUTION: error_msg = "NO_IK_SOLUTION"; break;
-                default: error_msg = "UNKNOWN_ERROR"; break;
+
+            // 获取详细的目标位姿信息
+            auto targets = move_group_->getPoseTargets();
+            std::string target_info = "Unknown target";
+            if (!targets.empty()) {
+                auto p = targets[0].pose;
+                target_info = "Position: [" + std::to_string(p.position.x) + ", " + 
+                              std::to_string(p.position.y) + ", " + std::to_string(p.position.z) + "], " +
+                              "Orientation: [" + std::to_string(p.orientation.x) + ", " + std::to_string(p.orientation.y) + ", " +
+                              std::to_string(p.orientation.z) + ", " + std::to_string(p.orientation.w) + "]";
             }
-            RCLCPP_ERROR(this->get_logger(), "Move to pose planning failed! Error: %s (code: %d)", error_msg.c_str(), result.val);
+
+            if (result.val == MoveItErrorCodes::GOAL_STATE_INVALID) {
+                // 明确区分碰撞还是无IK解
+                std::string detail_reason;
+                try {
+                    auto get_req = std::make_shared<moveit_msgs::srv::GetPlanningScene::Request>();
+                    get_req->components.components = moveit_msgs::msg::PlanningSceneComponents::ROBOT_STATE | moveit_msgs::msg::PlanningSceneComponents::WORLD_OBJECT_GEOMETRY;
+                    if (get_scene_client_->wait_for_service(std::chrono::seconds(2))) {
+                        auto get_future = get_scene_client_->async_send_request(get_req);
+                        if (get_future.wait_for(std::chrono::seconds(2)) == std::future_status::ready) {
+                            auto scene = get_future.get()->scene;
+                            // 检查末端link是否发生碰撞
+                            // 这里只能输出scene信息，不能直接获得碰撞对
+                            if (!scene.world.collision_objects.empty()) {
+                                detail_reason = "[检测到场景中存在障碍物, 目标可能发生碰撞]";
+                            } else {
+                                detail_reason = "[未检测到障碍物, 更可能为无IK解]";
+                            }
+                        } else {
+                            detail_reason = "[GetPlanningScene超时]";
+                        }
+                    } else {
+                        detail_reason = "[GetPlanningScene服务不可用]";
+                    }
+                } catch (const std::exception& e) {
+                    detail_reason = std::string("[GetPlanningScene异常: ") + e.what() + "]";
+                }
+                RCLCPP_ERROR(this->get_logger(), "Move to pose planning failed! Error: %s. %s Target: %s", error_msg.c_str(), detail_reason.c_str(), target_info.c_str());
+            } else {
+                RCLCPP_ERROR(this->get_logger(), "Move to pose planning failed! Error: %s (code: %d). Target: %s", error_msg.c_str(), result.val, target_info.c_str());
+            }
+
             RCLCPP_WARN(this->get_logger(), "Candidate failed, trying next...");
             continue;
         }
 
         RCLCPP_INFO(this->get_logger(), "Found valid grasp!");
-        return move_group_->execute(plan) == moveit::core::MoveItErrorCode::SUCCESS;
+        if (move_group_->execute(plan) == moveit::core::MoveItErrorCode::SUCCESS)
+    {
+        auto current = move_group_->getCurrentJointValues();
+        publishJointState(current, false);  
+        return true;
+    }
+    return false;
     }
 
     RCLCPP_ERROR(this->get_logger(), "No valid grasp found!");
@@ -252,15 +284,217 @@ bool MoveItBridge::cartesianMove(const geometry_msgs::msg::Pose& target_pose)
     std::vector<geometry_msgs::msg::Pose> waypoints;
     waypoints.push_back(target_pose);
 
+    RCLCPP_INFO(this->get_logger(), "[cartesianMove] 输入目标位姿: position=[%.4f, %.4f, %.4f], orientation=[%.4f, %.4f, %.4f, %.4f]", 
+        target_pose.position.x, target_pose.position.y, target_pose.position.z,
+        target_pose.orientation.x, target_pose.orientation.y, target_pose.orientation.z, target_pose.orientation.w);
+
+    // 打印当前关节状态
+    auto before_joints = move_group_->getCurrentJointValues();
+    std::ostringstream oss;
+    oss << "[cartesianMove] 当前关节: ";
+    for (size_t i = 0; i < before_joints.size(); ++i) oss << before_joints[i] << (i+1==before_joints.size()?"":" ");
+    RCLCPP_DEBUG(this->get_logger(), "%s", oss.str().c_str());
+
+    double eef_step = 0.02;
+    double jump_thresh = 0.0;
+    RCLCPP_DEBUG(this->get_logger(), "[cartesianMove] 规划参数: eef_step=%.3f, jump_thresh=%.3f, waypoints=%zu", eef_step, jump_thresh, waypoints.size());
+
     moveit_msgs::msg::RobotTrajectory traj;
-    double fraction = move_group_->computeCartesianPath(waypoints, 0.005, 0.0, traj);
+    double fraction = move_group_->computeCartesianPath(waypoints, eef_step, jump_thresh, traj);
+
+    RCLCPP_INFO(this->get_logger(), "[cartesianMove] computeCartesianPath fraction: %.2f%%, 轨迹点数: %zu", fraction * 100.0, traj.joint_trajectory.points.size());
+
+    if (traj.joint_trajectory.points.size() > 0) {
+        const auto& last = traj.joint_trajectory.points.back();
+        std::ostringstream oss2;
+        oss2 << "[cartesianMove] 末端轨迹点: ";
+        for (size_t i = 0; i < last.positions.size(); ++i) oss2 << last.positions[i] << (i+1==last.positions.size()?"":" ");
+        RCLCPP_DEBUG(this->get_logger(), "%s", oss2.str().c_str());
+    }
 
     if (fraction < 0.9) {
-        RCLCPP_WARN(this->get_logger(), "Cartesian path only followed %.2f%% of the trajectory", fraction * 100.0);
+        RCLCPP_WARN(this->get_logger(), "[cartesianMove] 路径跟踪比例过低: %.2f%%，放弃执行。", fraction * 100.0);
         return false;
     }
 
-    return move_group_->execute(traj) == moveit::core::MoveItErrorCode::SUCCESS;
+    RCLCPP_INFO(this->get_logger(), "[cartesianMove] 开始执行轨迹...");
+    auto exec_result = move_group_->execute(traj);
+    if (exec_result == moveit::core::MoveItErrorCode::SUCCESS)
+    {
+        auto current = move_group_->getCurrentJointValues();
+        std::ostringstream oss3;
+        oss3 << "[cartesianMove] 执行后关节: ";
+        for (size_t i = 0; i < current.size(); ++i) oss3 << current[i] << (i+1==current.size()?"":" ");
+        RCLCPP_INFO(this->get_logger(), "%s", oss3.str().c_str());
+        RCLCPP_INFO(this->get_logger(), "[cartesianMove] Trajectory execution succeeded. Current joint state updated.");
+        publishJointState(current, false);  // arm
+        return true;
+    } else {
+        RCLCPP_ERROR(this->get_logger(), "[cartesianMove] Trajectory execution failed. Error code: %d", exec_result.val);
+    }
+    return false;
+}
+
+void MoveItBridge::publishJointState(
+    const std::vector<double>& positions,
+    bool is_gripper)
+{
+    sensor_msgs::msg::JointState msg;
+    msg.header.stamp = this->get_clock()->now();
+
+    if (!is_gripper)
+    {
+        auto names = move_group_->getJointNames();
+
+        for (size_t i = 0; i < names.size(); i++)
+        {
+            const std::string& n = names[i];
+
+            if (n == "joint1") full_joint_state_[0] = positions[i];
+            else if (n == "joint2") full_joint_state_[1] = positions[i];
+            else if (n == "joint3") full_joint_state_[2] = positions[i];
+            else if (n == "joint4") full_joint_state_[3] = positions[i];
+            else if (n == "joint5") full_joint_state_[4] = positions[i];
+            else if (n == "joint6") full_joint_state_[5] = positions[i];
+        }
+    }
+    else
+    {
+        auto names = gripper_group_->getJointNames();
+
+        for (size_t i = 0; i < names.size(); i++)
+        {
+            const std::string& n = names[i];
+
+            if (n == "joint7") full_joint_state_[6] = positions[i];
+            else if (n == "joint8") full_joint_state_[7] = positions[i];
+        }
+    }
+
+    msg.name = {
+        "joint1","joint2","joint3","joint4",
+        "joint5","joint6","joint7","joint8"
+    };
+    msg.position.clear();
+    for (const auto& name : msg.name) {
+        if (name == "joint1") msg.position.push_back(full_joint_state_[0]);
+        else if (name == "joint2") msg.position.push_back(full_joint_state_[1]);
+        else if (name == "joint3") msg.position.push_back(full_joint_state_[2]);
+        else if (name == "joint4") msg.position.push_back(full_joint_state_[3]);
+        else if (name == "joint5") msg.position.push_back(full_joint_state_[4]);
+        else if (name == "joint6") msg.position.push_back(full_joint_state_[5]);
+        else if (name == "joint7") msg.position.push_back(full_joint_state_[6]);
+        else if (name == "joint8") msg.position.push_back(full_joint_state_[7]);
+    }
+
+    pub_->publish(msg);
+}
+
+bool MoveItBridge::allowGripperCollision(bool allow)
+{
+    // 等待服务
+    if (!get_scene_client_->wait_for_service(std::chrono::seconds(2))) {
+        RCLCPP_ERROR(this->get_logger(), "GetPlanningScene service not available");
+        return false;
+    }
+
+    if (!apply_scene_client_->wait_for_service(std::chrono::seconds(2))) {
+        RCLCPP_ERROR(this->get_logger(), "ApplyPlanningScene service not available");
+        return false;
+    }
+
+    // =========================
+    // Step 1: 获取当前 scene
+    // =========================
+    auto get_req = std::make_shared<moveit_msgs::srv::GetPlanningScene::Request>();
+    get_req->components.components =
+        moveit_msgs::msg::PlanningSceneComponents::ALLOWED_COLLISION_MATRIX;
+
+    auto get_future = get_scene_client_->async_send_request(get_req);
+
+    if (get_future.wait_for(std::chrono::seconds(2)) != std::future_status::ready)
+    {
+        RCLCPP_ERROR(this->get_logger(), "GetPlanningScene timeout");
+        return false;
+    }
+
+    auto scene = get_future.get()->scene;
+
+    // =========================
+    // Step 2: 修改 ACM
+    // =========================
+    auto& acm = scene.allowed_collision_matrix;
+
+    std::vector<std::string> gripper_links = {
+        "gripper_base",
+        "link7",
+        "link8"
+    };
+
+    std::string object_id = "target_cylinder";
+
+    // 👉 工具函数：确保 entry 存在
+    auto ensureEntry = [&](const std::string& name) {
+        auto it = std::find(acm.entry_names.begin(), acm.entry_names.end(), name);
+        if (it == acm.entry_names.end()) {
+            acm.entry_names.push_back(name);
+
+            moveit_msgs::msg::AllowedCollisionEntry entry;
+            entry.enabled.resize(acm.entry_names.size(), false);
+
+            // 所有已有行也要扩展一列
+            for (auto& row : acm.entry_values) {
+                row.enabled.push_back(false);
+            }
+
+            acm.entry_values.push_back(entry);
+        }
+    };
+
+    // 确保 object 和 links 都存在
+    ensureEntry(object_id);
+    for (auto& link : gripper_links) {
+        ensureEntry(link);
+    }
+
+    // 重新获取 index（因为可能刚插入）
+    auto getIndex = [&](const std::string& name) {
+        return std::distance(acm.entry_names.begin(),
+            std::find(acm.entry_names.begin(), acm.entry_names.end(), name));
+    };
+
+    int obj_idx = getIndex(object_id);
+
+    // 设置允许碰撞
+    for (auto& link : gripper_links) {
+        int link_idx = getIndex(link);
+
+        acm.entry_values[obj_idx].enabled[link_idx] = allow;
+        acm.entry_values[link_idx].enabled[obj_idx] = allow;
+    }
+
+    // =========================
+    // Step 3: 发送 diff
+    // =========================
+    moveit_msgs::msg::PlanningScene diff;
+    diff.is_diff = true;
+    diff.allowed_collision_matrix = acm;
+
+    auto apply_req = std::make_shared<moveit_msgs::srv::ApplyPlanningScene::Request>();
+    apply_req->scene = diff;
+
+    auto apply_future = apply_scene_client_->async_send_request(apply_req);
+
+    if (apply_future.wait_for(std::chrono::seconds(2)) != std::future_status::ready)
+    {
+        RCLCPP_ERROR(this->get_logger(), "ApplyPlanningScene timeout");
+        return false;
+    }
+
+    RCLCPP_INFO(this->get_logger(),
+        allow ? "ACM updated: ALLOW collision" : "ACM updated: DISALLOW collision");
+
+    return true;
 }
 
 int main(int argc, char **argv)

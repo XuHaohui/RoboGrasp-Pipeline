@@ -10,6 +10,8 @@
 #include "moveit/move_group_interface/move_group_interface.h"
 #include "moveit/planning_scene_interface/planning_scene_interface.h"
 #include "trajectory_msgs/msg/joint_trajectory.hpp"
+#include <moveit_msgs/srv/get_planning_scene.hpp>
+#include <moveit_msgs/srv/apply_planning_scene.hpp>
 
 const double CYLINDER_H = 0.10;
 const double CYLINDER_R = 0.01;
@@ -50,6 +52,14 @@ private:
      */
     bool cartesianMove(const geometry_msgs::msg::Pose& target_pose);
 
+    /*
+     * @brief 允许或禁止夹爪与物体发生碰撞
+     */
+    bool allowGripperCollision(bool allow);
+    
+    /*
+     * @brief 向场景中添加圆柱体
+     */
     void addCylinder(const geometry_msgs::msg::Pose& bottom_pose, const std::string& frame_id);
 
 // grasp candidates 采样函数声明
@@ -63,6 +73,12 @@ friend std::vector<geometry_msgs::msg::Pose> generateGraspCandidates(const geome
     rclcpp::Publisher<sensor_msgs::msg::JointState>::SharedPtr pub_;
     rclcpp::Publisher<trajectory_msgs::msg::JointTrajectory>::SharedPtr traj_pub_;
     rclcpp::TimerBase::SharedPtr timer_;
+    rclcpp::Client<moveit_msgs::srv::GetPlanningScene>::SharedPtr get_scene_client_;
+    rclcpp::Client<moveit_msgs::srv::ApplyPlanningScene>::SharedPtr apply_scene_client_;
+
+    std::vector<double> full_joint_state_ = std::vector<double>(8, 0.0);
 
     bool busy_ = false;
+    // 补充声明：发布关节状态
+    void publishJointState(const std::vector<double>& positions, bool is_gripper);
 };

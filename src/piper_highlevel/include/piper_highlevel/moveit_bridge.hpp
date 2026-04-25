@@ -56,6 +56,11 @@ private:
      * @brief 允许或禁止夹爪与物体发生碰撞
      */
     bool allowGripperCollision(bool allow);
+
+    /**
+     * @brief 将夹爪闭合到指定的宽度
+     */
+    bool closeGripperToObject(double object_width);
     
     /*
      * @brief 向场景中添加圆柱体

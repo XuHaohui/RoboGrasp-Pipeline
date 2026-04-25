@@ -108,7 +108,7 @@ void MoveItBridge::addCylinder(const geometry_msgs::msg::Pose& bottom_pose, cons
 void MoveItBridge::GraspSequence(const geometry_msgs::msg::Pose& target_pose, const std::string& frame_id)
 {
     move_group_->setPoseReferenceFrame(frame_id);
-    move_group_->setMaxVelocityScalingFactor(0.2);
+    move_group_->setMaxVelocityScalingFactor(0.05);
     move_group_->setMaxAccelerationScalingFactor(0.2);
 
     std::vector<RobotAction> task_queue;
@@ -138,18 +138,22 @@ void MoveItBridge::GraspSequence(const geometry_msgs::msg::Pose& target_pose, co
     // 3. 封装动作：直线下降
     move_group_->setStartState(*move_group_->getCurrentState());
     task_queue.push_back([this, target_pose,frame_id]() {
-        geometry_msgs::msg::Pose p = target_pose;
-        p.position.z += (CYLINDER_H / 2.0); 
+
+        auto current_pose_stamped = move_group_->getCurrentPose();
+        geometry_msgs::msg::Pose current_p = current_pose_stamped.pose;
+        
+        geometry_msgs::msg::Pose p = current_p; 
+        p.position.z = target_pose.position.z + (CYLINDER_H / 2.0); 
 
         move_group_->setPoseReferenceFrame(frame_id);
-        //return cartesianMove(p);
-        return moveToPoseSampling(p);
+        return cartesianMove(p);
+        //return moveToPoseSampling(p);
     });
 
     // 4. 封装动作：闭合夹爪
     move_group_->setStartState(*move_group_->getCurrentState());
     task_queue.push_back([this]() {
-        return controlGripper(false);
+        return closeGripperToObject(CYLINDER_R*2);
     });
 
     for (size_t i = 0; i < task_queue.size(); ++i) {
@@ -269,8 +273,8 @@ bool MoveItBridge::cartesianMove(const geometry_msgs::msg::Pose& target_pose)
     for (size_t i = 0; i < before_joints.size(); ++i) oss << before_joints[i] << (i+1==before_joints.size()?"":" ");
     RCLCPP_DEBUG(this->get_logger(), "%s", oss.str().c_str());
 
-    double eef_step = 0.02;
-    double jump_thresh = 0.0;
+    double eef_step = 0.01;
+    double jump_thresh =5.0;
     RCLCPP_DEBUG(this->get_logger(), "[cartesianMove] 规划参数: eef_step=%.3f, jump_thresh=%.3f, waypoints=%zu", eef_step, jump_thresh, waypoints.size());
 
     moveit_msgs::msg::RobotTrajectory traj;
@@ -399,6 +403,29 @@ bool MoveItBridge::allowGripperCollision(bool allow)
         allow ? "ACM updated: ALLOW collision" : "ACM updated: DISALLOW collision");
 
     return true;
+}
+
+bool MoveItBridge::closeGripperToObject(double object_width)
+{
+    if (!gripper_group_) return false;
+
+    const double MAX_WIDTH = 0.07; 
+    
+    double target_width = object_width - 0.005; 
+    if (target_width < 0) target_width = 0;
+
+    double target_joint_value = target_width / MAX_WIDTH * 0.04; 
+
+    std::vector<double> joint_values = gripper_group_->getCurrentJointValues();
+    for(auto &val : joint_values) val = target_joint_value; 
+
+    gripper_group_->setJointValueTarget(joint_values);
+    
+    moveit::planning_interface::MoveGroupInterface::Plan plan;
+    if (gripper_group_->plan(plan) == moveit::core::MoveItErrorCode::SUCCESS) {
+        return gripper_group_->execute(plan) == moveit::core::MoveItErrorCode::SUCCESS;
+    }
+    return false;
 }
 
 int main(int argc, char **argv)

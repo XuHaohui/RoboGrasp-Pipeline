@@ -13,6 +13,8 @@
 #include <tf2_geometry_msgs/tf2_geometry_msgs.hpp>
 #include <moveit_msgs/srv/get_planning_scene.hpp>
 #include <moveit_msgs/srv/apply_planning_scene.hpp>
+#include <queue>   
+#include <memory>  
 
 using std::placeholders::_1;
 using moveit_msgs::msg::MoveItErrorCodes;
@@ -142,101 +144,104 @@ void MoveItBridge::GraspSequence(const geometry_msgs::msg::Pose& target_pose, co
     move_group_->setMaxVelocityScalingFactor(0.05);
     move_group_->setMaxAccelerationScalingFactor(0.2);
 
-    std::vector<RobotAction> task_queue;
+    std::queue<OwnershipTask> task_queue;
 
     // 1. 封装动作：张开夹爪
-    move_group_->setStartState(*move_group_->getCurrentState());
-    task_queue.push_back([this]() { 
-        RCLCPP_INFO(this->get_logger(), "Step: Opening Gripper...");
-        bool success = controlGripper(true);
-        return success; 
+    task_queue.push([this](TaskPtr token) -> TaskPtr {
+        RCLCPP_INFO(this->get_logger(), "Stage 0: Opening Gripper...");
+        if (controlGripper(true)) return token; 
+        return token; 
     });
 
     // 2. 封装动作：移动到预抓取
-    move_group_->setStartState(*move_group_->getCurrentState());
-    task_queue.push_back([this, target_pose, frame_id]() {
-        RCLCPP_INFO(this->get_logger(), "Step: Moving to Pre-Grasp Pose...");
+    task_queue.push([this, target_pose, frame_id](TaskPtr token) -> TaskPtr {
+        RCLCPP_INFO(this->get_logger(), "Stage 1: Moving to Pre-Grasp...");
         geometry_msgs::msg::Pose p = target_pose;
-        p.position.z += (CYLINDER_H + 0.05); // 预抓取点在物体上方
-        move_group_->setPoseReferenceFrame(frame_id);
-        bool success = moveToPoseSampling(p);
-        return success;
+        p.position.z += (CYLINDER_H + 0.05);
+        if (moveToPoseSampling(p)) return token;
+        return token;
     });
 
     //2.5. 封装动作：允许夹爪与物体发生碰撞（规划时忽略碰撞） 
-    move_group_->setStartState(*move_group_->getCurrentState());
-    task_queue.push_back([this]() {
-        RCLCPP_INFO(this->get_logger(), "Step: Allowing Gripper-Object Collision for Planning...");
+    //move_group_->setStartState(*move_group_->getCurrentState());
+    task_queue.push([this](TaskPtr token) -> TaskPtr {
+        RCLCPP_INFO(this->get_logger(), "Stage 2: Allowing Collision...");
         allowGripperCollision(true);
-        return true;
+        rclcpp::sleep_for(std::chrono::milliseconds(200)); 
+        return token;
     });
 
     // 3. 封装动作：直线下降
-    move_group_->setStartState(*move_group_->getCurrentState());
-    task_queue.push_back([this, target_pose,frame_id]() {
-        RCLCPP_INFO(this->get_logger(), "Step: Cartesian Move to Grasp Pose...");
-
-        auto current_pose_stamped = move_group_->getCurrentPose();
-        geometry_msgs::msg::Pose current_p = current_pose_stamped.pose;
-        
+    //move_group_->setStartState(*move_group_->getCurrentState());
+    task_queue.push([this, target_pose](TaskPtr token) -> TaskPtr {
+        RCLCPP_INFO(this->get_logger(), "Stage 3: Cartesian Move Down...");
+        auto current_p = move_group_->getCurrentPose().pose;
         geometry_msgs::msg::Pose p = current_p; 
         p.position.z = target_pose.position.z + (CYLINDER_H / 2.0); 
-
-        move_group_->setPoseReferenceFrame(frame_id);
-        bool success = cartesianMove(p);
-        return success;
+        if (cartesianMove(p)) return token;
+        return token;
     });
 
     // 4. 封装动作：闭合夹爪
-    move_group_->setStartState(*move_group_->getCurrentState());
-    task_queue.push_back([this]() {
-        RCLCPP_INFO(this->get_logger(), "Step: Closing Gripper...");
-        bool success = closeGripperToObject(CYLINDER_R*2);
-        return success;
+    //move_group_->setStartState(*move_group_->getCurrentState());
+    task_queue.push([this](TaskPtr token) -> TaskPtr {
+        RCLCPP_INFO(this->get_logger(), "Stage 4: Closing Gripper to Object...");
+        if (closeGripperToObject(CYLINDER_R * 2)) {
+            return token;
+        }
+        return token;
     });
 
     // 5. 封装动作：逻辑吸附
-    move_group_->setStartState(*move_group_->getCurrentState());
-    task_queue.push_back([this]() {
-        RCLCPP_INFO(this->get_logger(), "Step: Attaching Object...");
+    //move_group_->setStartState(*move_group_->getCurrentState());
+    task_queue.push([this](TaskPtr token) -> TaskPtr {
+        RCLCPP_INFO(this->get_logger(), "Stage 5: Attaching Object...");
         move_group_->setStartStateToCurrentState();
-        bool success = attachObject(true);
-        if (success) {
+        if (attachObject(true)) {
             rclcpp::sleep_for(std::chrono::seconds(2));
+            return token;
         }
-        return success;
+        return token;
     });
 
     //6. 封装动作：抬高物体
-    move_group_->setStartState(*move_group_->getCurrentState());
-    task_queue.push_back([this, target_pose, frame_id]() {
-        geometry_msgs::msg::Pose p = target_pose;
-        p.position.z += (CYLINDER_H + 0.1); // 抬高一点
-        move_group_->setPoseReferenceFrame(frame_id);
-        bool success = cartesianMove(p);
-        return success;
-        //return moveToPoseSampling(p);
+    //move_group_->setStartState(*move_group_->getCurrentState());
+    task_queue.push([this, target_pose](TaskPtr token) -> TaskPtr {
+        RCLCPP_INFO(this->get_logger(), "Stage 6: Lifting...");
+        move_group_->setStartStateToCurrentState();
+        auto current_p = move_group_->getCurrentPose().pose;
+        geometry_msgs::msg::Pose p = current_p;
+        p.position.z += 0.10;
+        if (cartesianMove(p)) return token;
+        return token;
     });
 
     //7.回到初始位置
-    move_group_->setStartState(*move_group_->getCurrentState());
-    task_queue.push_back([this]() {
+    //move_group_->setStartState(*move_group_->getCurrentState());
+    task_queue.push([this](TaskPtr token) -> TaskPtr {
+        RCLCPP_INFO(this->get_logger(), "Stage 7: Returning Home...");
         move_group_->setNamedTarget("home");
-        moveit::planning_interface::MoveGroupInterface::Plan plan;
-        if (move_group_->plan(plan) == moveit::core::MoveItErrorCode::SUCCESS) {
-            return move_group_->execute(plan) == moveit::core::MoveItErrorCode::SUCCESS;
-        }
-        return false;
+        if (move_group_->move() == moveit::core::MoveItErrorCode::SUCCESS) return token;
+        return token;
     });
 
+    auto master_token = std::make_unique<TaskToken>();
 
-    for (size_t i = 0; i < task_queue.size(); ++i) {
-        RCLCPP_INFO(this->get_logger(), "Executing Stage %zu...", i);
+    size_t stage_idx = 0;
+    while (!task_queue.empty() && master_token != nullptr) {
+        move_group_->setStartStateToCurrentState();
+        
+        auto current_task = std::move(task_queue.front());
+        task_queue.pop();
 
-        move_group_->setStartState(*move_group_->getCurrentState());
-        task_queue[i]();
+        master_token = current_task(std::move(master_token));
 
-        rclcpp::sleep_for(std::chrono::milliseconds(100));
+        if (master_token == nullptr) {
+            RCLCPP_ERROR(this->get_logger(), "Pipeline ABORTED at Stage %zu", stage_idx - 1);
+            break;
+        }
+        
+        rclcpp::sleep_for(std::chrono::milliseconds(200));
     }
 }
 
@@ -258,6 +263,7 @@ bool MoveItBridge::controlGripper(bool open)
         RCLCPP_ERROR(this->get_logger(), "Gripper planning failed!");
         return false;
     }
+    return false;
 }
 
 std::vector<geometry_msgs::msg::Pose> generateGraspCandidates(

@@ -100,6 +100,11 @@ friend std::vector<geometry_msgs::msg::Pose> generateGraspCandidates(const geome
     rclcpp::Client<moveit_msgs::srv::ApplyPlanningScene>::SharedPtr apply_scene_client_;
 
     std::vector<double> full_joint_state_ = std::vector<double>(8, 0.0);
+    
+    struct TaskToken {};
+    using TaskPtr = std::unique_ptr<TaskToken>;
+    // 定义任务函数类型：接收一个 Token，返回一个 Token
+    using OwnershipTask = std::function<TaskPtr(TaskPtr)>;
 
     bool busy_ = false;
 };

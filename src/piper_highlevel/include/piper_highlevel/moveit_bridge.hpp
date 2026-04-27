@@ -19,7 +19,7 @@ const double CYLINDER_R = 0.01;
 // 定义 home 区域的物理尺寸
 const double HOME_X = 0.1;
 const double HOME_Y = 0.1;
-const double HOME_Z = 0.0; // 表面在 z=0
+const double HOME_Z = 0.0; 
 
 class MoveItBridge : public rclcpp::Node {
 public:
@@ -76,11 +76,6 @@ private:
      * @brief 向场景中添加圆柱体
      */
     void addCylinder(const geometry_msgs::msg::Pose& bottom_pose, const std::string& frame_id);
-
-    /**
-     * @brief 向场景中添加 home 区域实体（位于 z 轴以下）
-     */
-    void addHomeEntity(const std::string& frame_id);
 
 // grasp candidates 采样函数声明
 friend std::vector<geometry_msgs::msg::Pose> generateGraspCandidates(const geometry_msgs::msg::Pose& base_pose);

@@ -73,6 +73,7 @@ void MoveItBridge::pose_cb(const geometry_msgs::msg::PoseStamped::SharedPtr msg)
 
     move_group_->clearPoseTargets();
     move_group_->clearPathConstraints();
+    best_descent_traj_ = moveit_msgs::msg::RobotTrajectory();
 
     attachObject(false); 
         
@@ -142,7 +143,8 @@ void MoveItBridge::GraspSequence(const geometry_msgs::msg::Pose& target_pose, co
         move_group_->setStartStateToCurrentState();
         geometry_msgs::msg::Pose p = target_pose;
         p.position.z += (CYLINDER_H + 0.05);
-        if (moveToPoseSampling(p)) return token;
+
+        planBestGrasp(p);
         return token;
     });
 
@@ -193,7 +195,7 @@ void MoveItBridge::GraspSequence(const geometry_msgs::msg::Pose& target_pose, co
         move_group_->setStartStateToCurrentState();
         auto current_p = move_group_->getCurrentPose().pose;
         geometry_msgs::msg::Pose p = current_p;
-        p.position.z += 0.10;
+        p.position.z += 0.03;
         if (cartesianMove(p)) return token;
         return token;
     });
@@ -204,7 +206,7 @@ void MoveItBridge::GraspSequence(const geometry_msgs::msg::Pose& target_pose, co
         move_group_->setStartStateToCurrentState();
 
         geometry_msgs::msg::Pose p= target_pose;
-        p.position.x += 0.30;
+        p.position.x += 0.25;
         p.position.y -= 0.00;
         p.position.z = CYLINDER_H + 0.01;
 
@@ -224,6 +226,16 @@ void MoveItBridge::GraspSequence(const geometry_msgs::msg::Pose& target_pose, co
         return token;
     });
 
+    //9.释放物体
+    task_queue.push([this](TaskPtr token) -> TaskPtr {
+        RCLCPP_INFO(this->get_logger(), "Stage 9: Releasing Object...");
+        move_group_->setStartStateToCurrentState();
+        if (attachObject(false)) {
+            rclcpp::sleep_for(std::chrono::seconds(2));
+            return token;
+        }
+        return token;
+    });
 
     auto master_token = std::make_unique<TaskToken>();
 
@@ -277,25 +289,97 @@ std::vector<geometry_msgs::msg::Pose> generateGraspCandidates(
         double yaw = i * M_PI / 8.0;
 
         tf2::Quaternion q;
-        q.setRPY(0, M_PI / 2.0, yaw);   
+        q.setRPY(0, M_PI / 2.0, yaw); 
+        //q.setRPY(0,0, yaw);     
 
         tf2::Vector3 offset_local(0, 0,-tcp_offset);
 
         tf2::Vector3 offset_world = tf2::quatRotate(q, offset_local);
 
-        geometry_msgs::msg::Pose p;
-
+        //geometry_msgs::msg::Pose p;
+        geometry_msgs::msg::Pose p = base_pose;
         p.position.x = base_pose.position.x + offset_world.x();
         p.position.y = base_pose.position.y + offset_world.y();
         p.position.z = base_pose.position.z + offset_world.z();
 
-        //geometry_msgs::msg::Pose p = base_pose;
         p.orientation = tf2::toMsg(q);
 
         candidates.push_back(p);
     }
 
     return candidates;
+}
+
+bool MoveItBridge::planBestGrasp(const geometry_msgs::msg::Pose& pose)
+{
+    move_group_->setStartStateToCurrentState();
+
+    auto candidates = generateGraspCandidates(pose);
+    double best_fraction = -1.0;
+    moveit::planning_interface::MoveGroupInterface::Plan best_plan; 
+
+    for (auto& target : candidates) {
+        // --- 模拟 Stage 1: 预抓取点 ---
+        geometry_msgs::msg::Pose pre_grasp = target;
+
+        move_group_->setPoseTarget(target);
+        moveit::planning_interface::MoveGroupInterface::Plan pre_plan;
+        if (move_group_->plan(pre_plan) != moveit::core::MoveItErrorCode::SUCCESS) continue;
+
+        // --- 模拟 Stage 3: 从预抓取点直线下降 ---
+        moveit::core::RobotStatePtr robot_state = move_group_->getCurrentState();
+        robot_state->setJointGroupPositions(group_name_, pre_plan.trajectory_.joint_trajectory.points.back().positions);
+        move_group_->setStartState(*robot_state);
+        
+        std::vector<geometry_msgs::msg::Pose> waypoints_down;
+        geometry_msgs::msg::Pose drop_pose = pre_grasp;
+        drop_pose.position.z = pose.position.z + (CYLINDER_H / 2.0);
+        waypoints_down.push_back(drop_pose);
+
+        moveit_msgs::msg::RobotTrajectory test_traj_down;
+        double fraction_down = move_group_->computeCartesianPath(
+            waypoints_down, 0.01, 0.0, test_traj_down);
+        
+        // ---  模拟 Stage 6: 从抓取点抬高 ---
+        double fraction_up = 0.0;
+        moveit_msgs::msg::RobotTrajectory test_traj_up;
+        if (fraction_down >= 1.0) {
+            robot_state->setJointGroupPositions(group_name_, test_traj_down.joint_trajectory.points.back().positions);
+            move_group_->setStartState(*robot_state);
+
+            std::vector<geometry_msgs::msg::Pose> waypoints_up;
+            geometry_msgs::msg::Pose lift_pose = drop_pose;
+            lift_pose.position.z += 0.05;
+            waypoints_up.push_back(lift_pose);
+
+            fraction_up = move_group_->computeCartesianPath(waypoints_up, 0.01, 0.0, test_traj_up);
+        }
+
+        double total_fraction = fraction_down + fraction_up;
+        if (total_fraction > best_fraction) {
+            best_fraction = total_fraction;
+            best_plan = pre_plan;
+            best_pre_grasp_pose_ = pre_grasp;
+            best_descent_traj_ = test_traj_down;
+        }
+        
+        RCLCPP_INFO(this->get_logger(), "正在尝试规划到位姿: X=%.2f, Y=%.2f, Z=%.2f", 
+            pre_grasp.position.x, pre_grasp.position.y, pre_grasp.position.z);
+        
+        move_group_->setStartStateToCurrentState();
+
+        if (fraction_down >= 1.0 && fraction_up >= 0.4) break; 
+    }
+
+    if (best_fraction <= 0.0) {
+        RCLCPP_ERROR(this->get_logger(), "所有角度都无法规划路径！");
+    }else{
+        RCLCPP_INFO(this->get_logger(), "选定最优抓取角度，路径跟踪总比例: %.2f%%", best_fraction * 100.0);
+    }
+    
+    move_group_->setStartStateToCurrentState();
+    auto exec_res = move_group_->execute(best_plan);
+    return 1;
 }
 
 bool MoveItBridge::moveToPoseSampling(const geometry_msgs::msg::Pose& pose)
@@ -342,11 +426,21 @@ bool MoveItBridge::cartesianMove(const geometry_msgs::msg::Pose& target_pose)
     move_group_->setPlanningTime(5.0);           
     move_group_->setNumPlanningAttempts(5);     
     move_group_->setMaxVelocityScalingFactor(0.05); 
+    move_group_->setStartStateToCurrentState();
+
+    if (best_descent_traj_.joint_trajectory.points.size() > 0 && 
+        std::abs(best_descent_traj_.joint_trajectory.points.back().positions[0] - 0.0) > -1.0) // 简化判断
+    {
+        RCLCPP_INFO(this->get_logger(), "使用预存的最优笛卡尔轨迹执行...");
+        auto result = move_group_->execute(best_descent_traj_);
+        best_descent_traj_ = moveit_msgs::msg::RobotTrajectory(); // 用完清空
+        return result == moveit::core::MoveItErrorCode::SUCCESS;
+    }
 
     std::vector<geometry_msgs::msg::Pose> waypoints;
     auto start_pose = move_group_->getCurrentPose().pose;
 
-    const int num_points = 15;
+    const int num_points = 10;
     for (int i = 1; i <= num_points; ++i)
     {
         double t = static_cast<double>(i) / num_points;
@@ -364,7 +458,7 @@ bool MoveItBridge::cartesianMove(const geometry_msgs::msg::Pose& target_pose)
             start_pose.position.z +
             t * (target_pose.position.z - start_pose.position.z);
 
-        p.orientation = start_pose.orientation;// 保持原目标姿态（如果你希望末端姿态不变）
+        //p.orientation = start_pose.orientation;// 保持原目标姿态（如果你希望末端姿态不变）
         waypoints.push_back(p);
     }
 
@@ -381,7 +475,6 @@ bool MoveItBridge::cartesianMove(const geometry_msgs::msg::Pose& target_pose)
 
     double eef_step = 0.01;
     double jump_thresh = 0.0;
-    RCLCPP_DEBUG(this->get_logger(), "[cartesianMove] 规划参数: eef_step=%.3f, jump_thresh=%.3f, waypoints=%zu", eef_step, jump_thresh, waypoints.size());
 
     moveit_msgs::msg::RobotTrajectory traj;
     double fraction = move_group_->computeCartesianPath(waypoints, eef_step, jump_thresh, traj);

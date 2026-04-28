@@ -13,7 +13,7 @@
 #include <moveit_msgs/srv/get_planning_scene.hpp>
 #include <moveit_msgs/srv/apply_planning_scene.hpp>
 
-const double CYLINDER_H = 0.10;
+const double CYLINDER_H = 0.08;
 const double CYLINDER_R = 0.01;
 
 // 定义 home 区域的物理尺寸
@@ -30,7 +30,7 @@ public:
     /**
      * @brief 采样多个姿态进行运动规划
      */
-    bool moveToPoseSampling(const geometry_msgs::msg::Pose& pose);
+    bool planBestGrasp(const geometry_msgs::msg::Pose& pose);
 
 private:
     // 回调函数
@@ -77,6 +77,8 @@ private:
      */
     void addCylinder(const geometry_msgs::msg::Pose& bottom_pose, const std::string& frame_id);
 
+    bool moveToPoseSampling(const geometry_msgs::msg::Pose& pose);
+
 // grasp candidates 采样函数声明
 friend std::vector<geometry_msgs::msg::Pose> generateGraspCandidates(const geometry_msgs::msg::Pose& base_pose);
 
@@ -95,6 +97,10 @@ friend std::vector<geometry_msgs::msg::Pose> generateGraspCandidates(const geome
     rclcpp::Client<moveit_msgs::srv::ApplyPlanningScene>::SharedPtr apply_scene_client_;
 
     std::vector<double> full_joint_state_ = std::vector<double>(8, 0.0);
+    // 存储用于笛卡尔直线下降的最优轨迹（在 cpp 中被使用）
+    moveit_msgs::msg::RobotTrajectory best_descent_traj_;
+    // 记录选定的预抓取位姿
+    geometry_msgs::msg::Pose best_pre_grasp_pose_;
     
     struct TaskToken {};
     using TaskPtr = std::unique_ptr<TaskToken>;

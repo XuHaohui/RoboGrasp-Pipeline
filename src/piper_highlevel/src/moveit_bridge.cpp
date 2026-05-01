@@ -216,9 +216,9 @@ void MoveItBridge::GraspSequence(const geometry_msgs::msg::Pose& target_pose, co
         geometry_msgs::msg::Pose p= target_pose;
         p.position.x = 0.55;
         p.position.y = 0.00;
-        p.position.z = CYLINDER_H + 0.03;
+        p.position.z = CYLINDER_H + 0.1; 
 
-        const double drop_z = CYLINDER_H ;
+        const double drop_z = CYLINDER_H/2.0 +0.05; 
         planBestGrasp(p, 7, drop_z);
         return token;
     });
@@ -232,7 +232,7 @@ void MoveItBridge::GraspSequence(const geometry_msgs::msg::Pose& target_pose, co
     
         auto current_p = move_group_->getCurrentPose().pose;
         geometry_msgs::msg::Pose p = current_p;
-        p.position.z = CYLINDER_H;
+        p.position.z = CYLINDER_H/2.0 +0.05; 
 
         if (cartesianMove(p)) return token;
         return token;
@@ -489,7 +489,11 @@ bool MoveItBridge::cartesianMove(const geometry_msgs::msg::Pose& target_pose)
             double max_diff = 0.0;
             for (size_t i = 0; i < current_joints.size(); ++i) {
                 max_diff = std::max(max_diff, std::abs(current_joints[i] - traj_start_joints[i]));
-                RCLCPP_INFO(this->get_logger(), "误差为%.4f", max_diff);
+                RCLCPP_INFO(this->get_logger(), "当前关节偏差: %.4f", max_diff);
+            }
+            if (max_diff > 0.05) { // 扩大到 0.05 rad
+                start_state_match = false;
+                RCLCPP_WARN(this->get_logger(), "预存轨迹起点偏差过大 (%.4f > 0.05)，将执行实时规划", max_diff);
             }
         }
 

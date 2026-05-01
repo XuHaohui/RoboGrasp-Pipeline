@@ -4,12 +4,14 @@
 #include <string>
 #include <vector>
 #include <functional>
+#include <cstdint>
 #include "rclcpp/rclcpp.hpp"
 #include "geometry_msgs/msg/pose_stamped.hpp"
 #include "sensor_msgs/msg/joint_state.hpp"
 #include "moveit/move_group_interface/move_group_interface.h"
 #include "moveit/planning_scene_interface/planning_scene_interface.h"
 #include "trajectory_msgs/msg/joint_trajectory.hpp"
+#include <moveit_msgs/msg/robot_trajectory.hpp>
 #include <moveit_msgs/srv/get_planning_scene.hpp>
 #include <moveit_msgs/srv/apply_planning_scene.hpp>
 
@@ -30,7 +32,7 @@ public:
     /**
      * @brief 采样多个姿态进行运动规划
      */
-    bool planBestGrasp(const geometry_msgs::msg::Pose& pose);
+    bool planBestGrasp(const geometry_msgs::msg::Pose& pose, uint8_t stage, double drop_z);
 
 private:
     // 回调函数
@@ -98,7 +100,7 @@ friend std::vector<geometry_msgs::msg::Pose> generateGraspCandidates(const geome
 
     std::vector<double> full_joint_state_ = std::vector<double>(8, 0.0);
     // 存储用于笛卡尔直线下降的最优轨迹（在 cpp 中被使用）
-    moveit_msgs::msg::RobotTrajectory best_descent_traj_;
+    moveit_msgs::msg::RobotTrajectory best_traj_;
     // 记录选定的预抓取位姿
     geometry_msgs::msg::Pose best_pre_grasp_pose_;
     

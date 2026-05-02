@@ -84,6 +84,9 @@ private:
 // grasp candidates 采样函数声明
 friend std::vector<geometry_msgs::msg::Pose> generateGraspCandidates(const geometry_msgs::msg::Pose& base_pose);
 
+// 放置候选采样函数声明
+friend std::vector<geometry_msgs::msg::Pose> generatePlaceCandidates(const geometry_msgs::msg::Pose& base_pose);
+
     // 补充声明：发布关节状态
 
     rclcpp::CallbackGroup::SharedPtr cb_group_;

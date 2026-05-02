@@ -55,9 +55,9 @@ ros2 run piper_highlevel moveit_bridge --ros-args -p group_name:=arm
 
 ```bash
 ros2 topic pub /target_pose geometry_msgs/msg/PoseStamped "{\
-  header: { frame_id: 'base_link' },\
+  header: { frame_id: 'world' },\
   pose: {\
-    position: { x: 0.35, y: 0.0, z: 0.15 },\
+    position: { x: 0.35, y: 0.05, z: 0.15 },\
     orientation: { x: 0.0, y: 0.0, z: 0.0, w: 1.0 }\
   }\
 }" -1

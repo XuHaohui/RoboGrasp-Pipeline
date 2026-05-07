@@ -60,7 +60,7 @@ rosdep install --from-paths src --ignore-src -r -y
 # 2) 安装 Python 依赖（rosdep 不会处理 pip 依赖）
 # - 如果你安装了 piper_ros：按其 requirements 安装
 if [ -f src/piper_ros/piper_ros/requirements.txt ]; then
-  pip3 install -r src/piper_ros/piper_ros/requirements.txt
+  pip3 install -r src/piper_ros/requirements.txt
 fi
 
 # - MuJoCo（piper_mujoco 目前使用 mujoco_py）

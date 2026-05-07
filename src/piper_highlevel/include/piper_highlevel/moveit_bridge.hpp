@@ -32,7 +32,7 @@ public:
     /**
      * @brief 采样多个姿态进行运动规划
      */
-    bool planBestGrasp(const geometry_msgs::msg::Pose& pose, uint8_t stage, double drop_z);
+    bool attitudefilter(const geometry_msgs::msg::Pose& pose, uint8_t stage, double drop_z);
 
 private:
     // 回调函数

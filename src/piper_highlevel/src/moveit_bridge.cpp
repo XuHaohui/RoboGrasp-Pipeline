@@ -77,7 +77,7 @@ void MoveItBridge::pose_cb(const geometry_msgs::msg::PoseStamped::SharedPtr msg)
     move_group_->clearPoseTargets();
     move_group_->clearPathConstraints();
     best_traj_ = moveit_msgs::msg::RobotTrajectory();
-    best_pre_grasp_pose_ = geometry_msgs::msg::Pose(); // 重置最优姿态防止串扰
+    best_pre_grasp_pose_ = geometry_msgs::msg::Pose(); 
 
     attachObject(false); 
         
@@ -149,7 +149,7 @@ void MoveItBridge::GraspSequence(const geometry_msgs::msg::Pose& target_pose, co
         p.position.z += (CYLINDER_H + 0.05);
 
         const double drop_z = target_pose.position.z + (CYLINDER_H / 2.0);
-        planBestGrasp(p, 1, drop_z);
+        attitudefilter(p, 1, drop_z);
         return token;
     });
 
@@ -217,10 +217,10 @@ void MoveItBridge::GraspSequence(const geometry_msgs::msg::Pose& target_pose, co
         geometry_msgs::msg::Pose p= target_pose;
         p.position.x = 0.45;
         p.position.y = 0.05;
-        p.position.z = CYLINDER_H/2.0 + 0.15; 
+        p.position.z = CYLINDER_H/2.0 + 0.1; 
 
         const double drop_z = CYLINDER_H/2.0+0.05 ; 
-        planBestGrasp(p, 7, drop_z);
+        attitudefilter(p, 7, drop_z);
         return token;
     });
 
@@ -240,9 +240,17 @@ void MoveItBridge::GraspSequence(const geometry_msgs::msg::Pose& target_pose, co
         return token;
     });
 
-    //9.释放物体
+    //9.封装动作：释放物体
     task_queue.push([this](TaskPtr token) -> TaskPtr {
-        RCLCPP_INFO(this->get_logger(), "Stage 9: Releasing Object...");
+        RCLCPP_INFO(this->get_logger(), "Stage 9: Opening Gripper...");
+        move_group_->setStartStateToCurrentState();
+        if (controlGripper(true)) return token; 
+        return token; 
+    });
+
+    //10.释放物体
+    task_queue.push([this](TaskPtr token) -> TaskPtr {
+        RCLCPP_INFO(this->get_logger(), "Stage 10: Releasing Object...");
         move_group_->setStartStateToCurrentState();
         if (attachObject(false)) {
             rclcpp::sleep_for(std::chrono::seconds(2));
@@ -263,9 +271,11 @@ void MoveItBridge::GraspSequence(const geometry_msgs::msg::Pose& target_pose, co
         master_token = current_task(std::move(master_token));
 
         if (master_token == nullptr) {
-            RCLCPP_ERROR(this->get_logger(), "Pipeline ABORTED at Stage %zu", stage_idx - 1);
+            RCLCPP_ERROR(this->get_logger(), "Pipeline ABORTED at Stage %zu", stage_idx);
             break;
         }
+
+        ++stage_idx;
         
         rclcpp::sleep_for(std::chrono::milliseconds(300));
     }
@@ -362,7 +372,7 @@ std::vector<geometry_msgs::msg::Pose> generatePlaceCandidates(
     return candidates;
 }
 
-bool MoveItBridge::planBestGrasp(const geometry_msgs::msg::Pose& pose, uint8_t stage, double drop_z)
+bool MoveItBridge::attitudefilter(const geometry_msgs::msg::Pose& pose, uint8_t stage, double drop_z)
 {
     move_group_->setStartStateToCurrentState();
 
@@ -761,7 +771,14 @@ bool MoveItBridge::attachObject(bool allow_collision)
 
         RCLCPP_INFO(this->get_logger(), "Attaching object to gripper...");
 
-        return planning_scene_interface_.applyAttachedCollisionObject(attached_object);
+        const bool attached_ok = planning_scene_interface_.applyAttachedCollisionObject(attached_object);
+        if (attached_ok) {
+            moveit_msgs::msg::CollisionObject remove_obj;
+            remove_obj.id = object_id;
+            remove_obj.operation = moveit_msgs::msg::CollisionObject::REMOVE;
+            planning_scene_interface_.applyCollisionObject(remove_obj);
+        }
+        return attached_ok;
     }
     else
     {

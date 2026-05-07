@@ -1,102 +1,201 @@
-⚠️提示：本仓库仍然在开发中，功能不完整且稳定性不足
+⚠️提示：本仓库仍在开发中，接口与启动方式可能会变化。
+如果需要知道当前进展与本版本更新内容，请参考 版本记录 / 路线图 部分
 
-# Piper High-Level Control
+# Piper Highlevel + MuJoCo（ROS 2 Humble）
 
-## 项目简介
-Piper High-Level Control 是一个基于 ROS 2 Humble 的机器人控制框架，专注于高层次任务规划与执行。该项目集成了 MoveIt! 框架，用于实现复杂的运动规划任务，例如抓取与放置操作。项目的目标是提供一个模块化、可扩展且高效的机器人控制解决方案。
+本工程以 **MuJoCo 仿真** 为主要运行形态（默认不涉及实机）。整体是一个基于 ROS 2 Humble 的 colcon 工作区，核心自研包为 `piper_highlevel`。
 
-## 功能特性
-- **任务规划与执行**：支持抓取与放置任务的完整流水线，包括目标生成、运动规划、碰撞检测与执行。
-- **MoveIt! 集成**：利用 MoveIt! 提供的运动规划能力，支持多种机器人模型与末端执行器。
-- **多线程执行器**：通过 MultiThreadedExecutor 解决同步服务调用的潜在死锁问题。
-- **日志与调试**：详细的日志记录与调试信息，便于开发与问题排查。
+你还需要一套 Piper 相关的描述/MoveIt/仿真包（上游项目 `piper_ros`）。
 
-## 系统要求
-- **操作系统**：Linux
-- **ROS 2 版本**：Humble
-- **依赖**：
-  - MoveIt!
-  - rclcpp
-  - geometry_msgs
+- **piper_highlevel**（本仓库自研，位于 `src/piper_highlevel`）：MoveIt Bridge 节点（订阅目标位姿 → 调用 MoveIt 规划 → 发布 `/joint_states`）。
+- **piper_ros**：包含 `piper_description`、`piper_with_gripper_moveit`、`piper_no_gripper_moveit`、`piper_mujoco` 等。
+  - 如果你 `git clone` 下来 **没有** `src/piper_ros/piper_ros`，请按下文“安装/获取 piper_ros”安装。
 
-## 安装与构建
-1. 克隆仓库：
-   ```bash
-   git clone <repository_url> ~/piper_control
-   cd ~/piper_control
-   ```
-2. 安装依赖：
-   ```bash
-   rosdep install --from-paths src --ignore-src -r -y
-   ```
-3. 构建工作区：
-   ```bash
-   colcon build
-   ```
-4. 设置环境：
-   ```bash
-   source install/setup.bash
-   ```
+## 支持内容（概览）
 
-## 使用说明
-### 启动 MoveIt! Demo
-运行以下命令启动 MoveIt! 演示：
+- MoveIt2 规划与 RViz Demo（有/无夹爪，来自 `piper_ros`）
+- `piper_highlevel`：`moveit_bridge` 节点 + 一键 launch（同时启动 `move_group` 与 bridge）
+- MuJoCo 可视化仿真：订阅 `/joint_states` 驱动 MuJoCo 模型（来自 `piper_ros/piper_mujoco`）
+
+## 环境要求
+
+- Ubuntu 22.04（或与 Humble 匹配的 Linux）
+- ROS 2 Humble
+- MoveIt2（Humble）
+- 构建工具：`colcon`、`rosdep`
+
+MuJoCo 仿真相关的额外依赖（仅在需要时安装）：
+
+- Python 包：`mujoco_py`（`piper_mujoco` 当前使用该库）
+  - 说明：`mujoco_py` 对系统 OpenGL/GLFW 等依赖较敏感；如安装失败，请先按其官方说明补齐系统依赖。
+
+> 本 README 默认不覆盖“真机 CAN 控制”。如果你未来需要真机，请直接参考上游 `piper_ros` 的文档。
+
+## 安装/获取 piper_ros（当你的仓库里没有时）
+
+如果你的工作区 `src/` 下没有 `piper_description`、`piper_with_gripper_moveit`、`piper_mujoco` 等包，建议按下面方式把上游 `piper_ros` 拉到工作区里（示例以 Humble 分支为准）：
+
 ```bash
+mkdir -p src/piper_ros
+git clone https://github.com/agilexrobotics/piper_ros.git src/piper_ros/piper_ros
+cd src/piper_ros/piper_ros
+git checkout humble
+cd ../../../
+```
+
+然后你就会拥有 MuJoCo/MoveIt 所需的相关包与资源文件。
+
+## 快速开始（构建工作区）
+
+在工作区根目录执行：
+
+```bash
+# 本工程基于 ROS 2 Humble
+source /opt/ros/humble/setup.bash
+
+# 1) 安装 ROS 依赖（会从 package.xml 解析）
+rosdep update
+rosdep install --from-paths src --ignore-src -r -y
+
+# 2) 安装 Python 依赖（rosdep 不会处理 pip 依赖）
+# - 如果你安装了 piper_ros：按其 requirements 安装
+if [ -f src/piper_ros/piper_ros/requirements.txt ]; then
+  pip3 install -r src/piper_ros/piper_ros/requirements.txt
+fi
+
+# - MuJoCo（piper_mujoco 目前使用 mujoco_py）
+pip3 install mujoco_py
+
+# 3) 构建
+colcon build --symlink-install
+
+# 4) 生效工作区环境
+source install/setup.bash
+```
+
+只构建关键包（开发 `piper_highlevel` 时更快）：
+
+```bash
+colcon build --symlink-install \
+  --packages-select piper_highlevel piper_description piper_with_gripper_moveit
+```
+
+## 运行方式
+
+### 1）MoveIt RViz Demo（推荐先验证环境）
+
+有夹爪：
+
+```bash
+source install/setup.bash
 ros2 launch piper_with_gripper_moveit demo.launch.py
 ```
 
-### 发布目标位姿
-通过以下命令发布目标位姿：
+### 2）启动 MoveIt Bridge（同时启动 move_group + bridge）
+
+该方式会从 `piper_description` 与 `piper_with_gripper_moveit` 读取 URDF/SRDF/kinematics 等配置，并启动：
+
+- `moveit_ros_move_group/move_group`
+- `piper_highlevel/moveit_bridge`（节点名：`piper_moveit_bridge`）
+
+启动：
+
 ```bash
+source install/setup.bash
+ros2 launch piper_highlevel piper_moveit_bridge.launch.py
+```
+
+发布一个目标位姿（示例）：
+
+```bash
+source install/setup.bash
 ros2 topic pub /target_pose geometry_msgs/msg/PoseStamped "{\
-  header: { frame_id: 'base_link' },\
+  header: { frame_id: 'world' },\
   pose: {\
-    position: { x: 0.35, y: 0.0, z: 0.15 },\
+    position: { x: 0.35, y: 0.05, z: 0.15 },\
     orientation: { x: 0.0, y: 0.0, z: 0.0, w: 1.0 }\
   }\
 }" -1
 ```
 
-### 启动高层次控制节点
-运行以下命令启动高层次控制节点：
+说明：
+
+- `piper_moveit_bridge.launch.py` 默认会发布一个 `world -> base_link` 的静态 TF；如你在自己的 TF 树里已提供对应变换，可按需移除。
+- 若你的 planning group 不是 `arm`，可这样指定：
+
 ```bash
+ros2 launch piper_highlevel piper_moveit_bridge.launch.py group_name:=<你的group>
+```
+
+更详细的 bridge 文档：
+
+- `src/piper_highlevel/README.md`
+- `src/piper_highlevel/README_MOVEIT_BRIDGE.md`
+
+### 3）MuJoCo 仿真（无实机）
+
+MuJoCo 节点会订阅 `/joint_states` 并驱动 MuJoCo 模型渲染；你可以用 MoveIt Bridge 规划后发布的 `/joint_states` 来驱动仿真。
+
+终端 A：启动 MoveIt（move_group + bridge）：
+
+```bash
+source install/setup.bash
 ros2 launch piper_highlevel piper_moveit_bridge.launch.py
 ```
 
-## 文件结构
-- **src/**：源代码目录
-  - `piper_highlevel/src/moveit_bridge.cpp`：主要的任务规划与执行逻辑。
-  - `piper_highlevel/src/pick_task.cpp`：抓取任务的实现。
-- **install/**：构建后的安装目录。
-- **log/**：日志文件。
+终端 B：启动 MuJoCo 可视化（有夹爪）：
 
-## 已知问题与解决方案
-1. **死锁问题**：
-   - 问题：同步服务调用可能导致死锁。
-   - 解决：引入 MultiThreadedExecutor 并为服务调用分配独立的 CallbackGroup。
+```bash
+source install/setup.bash
+ros2 run piper_mujoco piper_mujoco_ctrl.py
+```
 
-2. **IK 失败**：
-   - 问题：低超时时间导致 IK 求解失败。
-   - 解决：将 `kinematics_solver_timeout` 增加到 0.05 秒。
+终端 C：发布目标位姿触发规划（同上节示例）。
 
-3. **日志过多**：
-   - 问题：某些 ROS 2 日志过于冗长。
-   - 解决：使用 `grep -v` 或配置环境变量抑制特定日志。
+注意：
 
-## 贡献指南
-欢迎贡献代码与改进！请遵循以下步骤：
-1. Fork 本仓库。
-2. 创建新分支：
-   ```bash
-   git checkout -b feature/your-feature-name
-   ```
-3. 提交更改并推送到远程仓库。
-4. 创建 Pull Request。
+- `piper_mujoco` 依赖 `piper_description` 包中 `mujoco_model/piper_description.xml`；若提示找不到模型文件，请确认 `piper_description` 已正确构建并被 `source install/setup.bash`。
+- MuJoCo Viewer 需要图形界面（X11/Wayland + OpenGL）。在无桌面环境下运行需要额外配置虚拟显示。
+
+## 目录结构
+
+- `src/piper_highlevel/`：高层控制与 MoveIt Bridge（本仓库自研包）
+- `src/piper_ros/piper_ros/`：Piper 描述/MoveIt/MuJoCo 等（上游依赖；若你的 clone 没有，需要按上文安装）
+- `install/`、`build/`、`log/`：colcon 生成目录
+
+## 常见问题（FAQ）
+
+1）`demo.launch.py` 报“参数需要 double，却给了 string”
+
+通常与本地语言区域（小数点）有关，按 `piper_moveit` 文档建议设置：
+
+```bash
+echo "export LC_NUMERIC=en_US.UTF-8" >> ~/.bashrc
+source ~/.bashrc
+```
+
+2）MoveIt 规划失败 / IK 失败
+
+- 确认 `move_group` 已启动且加载了正确的 URDF/SRDF。
+- 确认 `frame_id` 与 MoveIt 使用的 planning frame 一致。
+- 若 kinematics 超时过低，可在 MoveIt 配置的 `kinematics.yaml` 里增大 `kinematics_solver_timeout`。
+
+3）构建后找不到 launch / urdf 等资源
+
+- 确认执行了 `source install/setup.bash`。
+- 若你在 `piper_ros` 内修改了资源文件，推荐使用 `colcon build --symlink-install` 以便开发迭代。
+
+## 版本记录 / 路线图
+
+### 上一版本（已完成）
+
+将stage7-8引入类似stage1-2的采样评分逻辑。
+
+### 下一版本（计划）
+
+- **提高 stage7-8 的成功率**：聚焦夹爪相关阶段（含 `joint7/joint8` 的镜像/控制与时序稳定性），减少执行/跟随失败。
+- 增强可观测性：为 stage7-8 增加更聚焦的日志与失败原因统计，方便定位是 IK、碰撞、控制器还是状态不同步问题。
 
 ## 许可证
-本项目遵循 [MIT 许可证](LICENSE)。
 
-## 联系方式
-如有任何问题，请联系项目维护者：
-- 邮箱：hajimi@example.com
-- GitHub Issues：<repository_url>/issues
+本工作区可能会组合多个 ROS 包/上游依赖，许可证以各包 `package.xml` 与上游仓库自带 LICENSE 为准；例如 `src/piper_ros/piper_ros/LICENSE`。

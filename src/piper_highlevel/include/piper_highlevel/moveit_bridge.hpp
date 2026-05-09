@@ -7,7 +7,6 @@
 #include <cstdint>
 #include "rclcpp/rclcpp.hpp"
 #include "geometry_msgs/msg/pose_stamped.hpp"
-#include "sensor_msgs/msg/joint_state.hpp"
 #include "moveit/move_group_interface/move_group_interface.h"
 #include "moveit/planning_scene_interface/planning_scene_interface.h"
 #include "trajectory_msgs/msg/joint_trajectory.hpp"
@@ -17,11 +16,6 @@
 
 const double CYLINDER_H = 0.08;
 const double CYLINDER_R = 0.01;
-
-// 定义 home 区域的物理尺寸
-const double HOME_X = 0.1;
-const double HOME_Y = 0.1;
-const double HOME_Z = 0.0; 
 
 class MoveItBridge : public rclcpp::Node {
 public:
@@ -82,12 +76,10 @@ private:
     bool moveToPoseSampling(const geometry_msgs::msg::Pose& pose);
 
 // grasp candidates 采样函数声明
-friend std::vector<geometry_msgs::msg::Pose> generateGraspCandidates(const geometry_msgs::msg::Pose& base_pose);
+ std::vector<geometry_msgs::msg::Pose> generateGraspCandidates(const geometry_msgs::msg::Pose& base_pose);
 
 // 放置候选采样函数声明
-friend std::vector<geometry_msgs::msg::Pose> generatePlaceCandidates(const geometry_msgs::msg::Pose& base_pose);
-
-    // 补充声明：发布关节状态
+ std::vector<geometry_msgs::msg::Pose> generatePlaceCandidates(const geometry_msgs::msg::Pose& base_pose);
 
     rclcpp::CallbackGroup::SharedPtr cb_group_;
     std::string group_name_;
@@ -95,7 +87,6 @@ friend std::vector<geometry_msgs::msg::Pose> generatePlaceCandidates(const geome
     std::shared_ptr<moveit::planning_interface::MoveGroupInterface> gripper_group_;
     moveit::planning_interface::PlanningSceneInterface planning_scene_interface_;
     rclcpp::Subscription<geometry_msgs::msg::PoseStamped>::SharedPtr sub_;
-    rclcpp::Publisher<sensor_msgs::msg::JointState>::SharedPtr pub_;
     rclcpp::Publisher<trajectory_msgs::msg::JointTrajectory>::SharedPtr traj_pub_;
     rclcpp::TimerBase::SharedPtr timer_;
     rclcpp::Client<moveit_msgs::srv::GetPlanningScene>::SharedPtr get_scene_client_;

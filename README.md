@@ -39,7 +39,7 @@ MuJoCo 仿真相关的额外依赖（仅在需要时安装）：
 
 ```bash
 mkdir -p src/piper_ros
-git clone https://github.com/agilexrobotics/piper_ros.git src/piper_ros/piper_ros
+git clone https://github.com/agilexrobotics/piper_ros.git src/piper_ros
 cd src/piper_ros/piper_ros
 git checkout humble
 cd ../../../

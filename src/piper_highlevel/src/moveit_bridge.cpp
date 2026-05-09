@@ -226,7 +226,7 @@ void MoveItBridge::GraspSequence(const geometry_msgs::msg::Pose& target_pose, co
         gripper_group_->setStartStateToCurrentState();
 
         geometry_msgs::msg::Pose base_pose = move_group_->getCurrentPose().pose;
-        base_pose.position.x = 0.45;
+        base_pose.position.x = 0.40;
         base_pose.position.y = 0.05;
         base_pose.position.z = CYLINDER_H / 2.0 + 0.12;
 

@@ -44,11 +44,6 @@ private:
     bool controlGripper(bool open);
 
     /**
-     * @brief 移动到指定位姿（标准关节规划/自由规划）
-     */
-    bool moveToPose(const geometry_msgs::msg::Pose& pose);
-
-    /**
      * @brief 笛卡尔直线移动
      */
     bool cartesianMove(const geometry_msgs::msg::Pose& target_pose);
@@ -73,13 +68,16 @@ private:
      */
     void addCylinder(const geometry_msgs::msg::Pose& bottom_pose, const std::string& frame_id);
 
-    bool moveToPoseSampling(const geometry_msgs::msg::Pose& pose);
-
 // grasp candidates 采样函数声明
  std::vector<geometry_msgs::msg::Pose> generateGraspCandidates(const geometry_msgs::msg::Pose& base_pose);
 
 // 放置候选采样函数声明
  std::vector<geometry_msgs::msg::Pose> generatePlaceCandidates(const geometry_msgs::msg::Pose& base_pose);
+
+    /**
+     * @brief 评估并选择放置位姿（根据笛卡尔下降可行性），并执行最佳放置规划
+     */
+    bool placefilter(const geometry_msgs::msg::Pose& base_pose, double drop_distance);
 
     rclcpp::CallbackGroup::SharedPtr cb_group_;
     std::string group_name_;

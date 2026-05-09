@@ -230,30 +230,7 @@ void MoveItBridge::GraspSequence(const geometry_msgs::msg::Pose& target_pose, co
         base_pose.position.y = 0.05;
         base_pose.position.z = CYLINDER_H / 2.0 + 0.12;
 
-        auto candidates = generatePlaceCandidates(base_pose);
-        bool executed = false;
-
-        for (const auto& p : candidates) {
-            move_group_->setStartStateToCurrentState();
-            move_group_->setPoseTarget(p);
-
-            moveit::planning_interface::MoveGroupInterface::Plan plan;
-            const auto plan_res = move_group_->plan(plan);
-            if (plan_res != moveit::core::MoveItErrorCode::SUCCESS ||
-                plan.trajectory_.joint_trajectory.points.empty()) {
-                continue;
-            }
-
-            const auto exec_res = move_group_->execute(plan);
-            if (exec_res == moveit::core::MoveItErrorCode::SUCCESS) {
-                executed = true;
-                break;
-            }
-        }
-
-        if (!executed) {
-            RCLCPP_WARN(this->get_logger(), "Pre-place planning/execution failed for all candidates");
-        }
+        placefilter(base_pose, base_pose.position.z-0.03);
 
         return token;
     });
@@ -435,6 +412,69 @@ std::vector<geometry_msgs::msg::Pose> MoveItBridge::generatePlaceCandidates(
     return candidates;
 }
 
+bool MoveItBridge::placefilter(const geometry_msgs::msg::Pose& base_pose, double drop_distance)
+{
+    move_group_->setStartStateToCurrentState();
+
+    double best_fraction = -1.0;
+    moveit::planning_interface::MoveGroupInterface::Plan best_plan;
+
+    auto candidates = generatePlaceCandidates(base_pose);
+
+    for (const auto& target : candidates) {
+        move_group_->setStartStateToCurrentState();
+
+        auto start_state = move_group_->getCurrentState();
+        const moveit::core::JointModelGroup* jmg = move_group_->getRobotModel()->getJointModelGroup(group_name_);
+        bool ik_solvable = start_state->setFromIK(jmg, target, 0.1);
+        if (!ik_solvable) {continue; }
+
+        move_group_->setPoseTarget(target);
+
+        moveit::planning_interface::MoveGroupInterface::Plan pre_plan;
+        auto plan_res = move_group_->plan(pre_plan);
+        if (plan_res != moveit::core::MoveItErrorCode::SUCCESS ||
+            pre_plan.trajectory_.joint_trajectory.points.empty()) {
+            continue;
+        }
+
+        moveit::core::RobotStatePtr robot_state = move_group_->getCurrentState();
+        robot_state->setJointGroupPositions(group_name_, pre_plan.trajectory_.joint_trajectory.points.back().positions);
+        move_group_->setStartState(*robot_state);
+
+        std::vector<geometry_msgs::msg::Pose> waypoints_down;
+        geometry_msgs::msg::Pose drop_pose = target;
+        drop_pose.position.z = drop_distance; // 改为绝对位置
+        waypoints_down.push_back(drop_pose);
+
+        moveit_msgs::msg::RobotTrajectory traj_down;
+        double fraction_down = move_group_->computeCartesianPath(
+            waypoints_down, 0.01, 0.0, traj_down);
+        
+        if (fraction_down > best_fraction) {
+            best_fraction = fraction_down;
+            best_plan = pre_plan;
+        }
+
+        move_group_->setStartStateToCurrentState();
+
+        if (fraction_down >= 0.9) {
+            break;
+        }
+    }
+
+    if (best_fraction <= 0.0) {
+        RCLCPP_ERROR(this->get_logger(), "PlaceFilter: 所有角度都无法规划路径！");
+        return false;
+    }
+
+    RCLCPP_INFO(this->get_logger(), "PlaceFilter: 选中评分最高的路径 (%.2f%%)，开始执行 Stage 7...", best_fraction * 100.0);
+    move_group_->setStartStateToCurrentState();
+    move_group_->execute(best_plan) ;
+    return true;
+
+}
+
 bool MoveItBridge::attitudefilter(const geometry_msgs::msg::Pose& pose, uint8_t stage, double drop_z)
 {
     move_group_->setStartStateToCurrentState();
@@ -560,18 +600,9 @@ bool MoveItBridge::cartesianMove(const geometry_msgs::msg::Pose& target_pose)
         const auto current_names = move_group_->getJointNames();
         const auto current_vals = move_group_->getCurrentJointValues();
 
-        const auto& traj_names = best_traj_.joint_trajectory.joint_names;
-        const auto& traj_start = best_traj_.joint_trajectory.points.front().positions;
-
         bool start_state_match = true;
         double max_diff = 0.0;
 
-        auto findIndex = [&](const std::vector<std::string>& names, const std::string& name) -> int {
-            for (size_t i = 0; i < names.size(); ++i) {
-                if (names[i] == name) return static_cast<int>(i);
-            }
-            return -1;
-        };
 
         if (start_state_match) {
             RCLCPP_INFO(this->get_logger(),

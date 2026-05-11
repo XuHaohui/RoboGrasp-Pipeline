@@ -3,14 +3,11 @@
 #include <memory>
 #include <string>
 #include <vector>
-#include <functional>
-#include <cstdint>
 #include "rclcpp/rclcpp.hpp"
 #include "geometry_msgs/msg/pose_stamped.hpp"
 #include "moveit/move_group_interface/move_group_interface.h"
 #include "moveit/planning_scene_interface/planning_scene_interface.h"
 #include "trajectory_msgs/msg/joint_trajectory.hpp"
-#include <moveit_msgs/msg/robot_trajectory.hpp>
 #include <moveit_msgs/srv/get_planning_scene.hpp>
 #include <moveit_msgs/srv/apply_planning_scene.hpp>
 
@@ -41,15 +38,6 @@ private:
     rclcpp::Client<moveit_msgs::srv::ApplyPlanningScene>::SharedPtr apply_scene_client_;
 
     std::vector<double> full_joint_state_ = std::vector<double>(8, 0.0);
-    // 存储用于笛卡尔直线下降的最优轨迹（在 cpp 中被使用）
-    moveit_msgs::msg::RobotTrajectory best_traj_;
-    // 记录选定的预抓取位姿
-    geometry_msgs::msg::Pose best_pre_grasp_pose_;
-    
-    struct TaskToken {};
-    using TaskPtr = std::unique_ptr<TaskToken>;
-    // 定义任务函数类型：接收一个 Token，返回一个 Token
-    using OwnershipTask = std::function<TaskPtr(TaskPtr)>;
 
     bool busy_ = false;
 };

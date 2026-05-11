@@ -32,6 +32,7 @@ ament_package()
 
 add_executable(moveit_bridge
   src/moveit_bridge.cpp
+  src/moveit_bridge_fsm.cpp
   src/moveit_bridge_tool.cpp
 )
 target_include_directories(moveit_bridge PUBLIC

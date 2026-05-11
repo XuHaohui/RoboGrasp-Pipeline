@@ -23,7 +23,6 @@ bool controlGripper(moveit::planning_interface::MoveGroupInterface& gripper_grou
                     bool open);
 
 bool cartesianMove(moveit::planning_interface::MoveGroupInterface& move_group,
-                   moveit_msgs::msg::RobotTrajectory& best_traj,
                    const rclcpp::Logger& logger,
                    const geometry_msgs::msg::Pose& target_pose);
 

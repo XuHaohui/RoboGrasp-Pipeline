@@ -6,7 +6,6 @@
 #include <sstream>
 
 #include <moveit_msgs/msg/collision_object.hpp>
-#include <moveit_msgs/msg/move_it_error_codes.hpp>
 #include <shape_msgs/msg/solid_primitive.hpp>
 #include <tf2_geometry_msgs/tf2_geometry_msgs.hpp>
 #include <moveit/robot_state/robot_state.h>
@@ -35,7 +34,6 @@ bool controlGripper(moveit::planning_interface::MoveGroupInterface& gripper_grou
 }
 
 bool cartesianMove(moveit::planning_interface::MoveGroupInterface& move_group,
-                   moveit_msgs::msg::RobotTrajectory& best_traj,
                    const rclcpp::Logger& logger,
                    const geometry_msgs::msg::Pose& target_pose)
 {
@@ -45,41 +43,6 @@ bool cartesianMove(moveit::planning_interface::MoveGroupInterface& move_group,
     move_group.setGoalTolerance(0.05);
     move_group.setStartStateToCurrentState();
 
-    constexpr double kAllowedStartTolerance = 0.01;
-
-    if (!best_traj.joint_trajectory.points.empty()) {
-        const auto current_names = move_group.getJointNames();
-        const auto current_vals = move_group.getCurrentJointValues();
-        (void)current_names;
-        (void)current_vals;
-
-        bool start_state_match = true;
-        double max_diff = 0.0;
-
-        if (start_state_match) {
-            RCLCPP_INFO(logger,
-                        "预存轨迹起点最大关节偏差: %.5f (allowed_start_tolerance=%.3f)",
-                        max_diff, kAllowedStartTolerance);
-            if (max_diff > kAllowedStartTolerance) {
-                start_state_match = false;
-                RCLCPP_WARN(logger,
-                            "预存轨迹起点偏差过大 (%.5f > %.3f)，将执行实时规划",
-                            max_diff, kAllowedStartTolerance);
-            }
-        }
-
-        if (start_state_match) {
-            RCLCPP_INFO(logger, "使用预存的最优笛卡尔轨迹执行...");
-            auto result = move_group.execute(best_traj);
-            if (result == moveit::core::MoveItErrorCode::SUCCESS) {
-                best_traj = moveit_msgs::msg::RobotTrajectory();
-                return true;
-            }
-        }
-        best_traj = moveit_msgs::msg::RobotTrajectory();
-    }
-
-    best_traj = moveit_msgs::msg::RobotTrajectory();
     std::vector<geometry_msgs::msg::Pose> waypoints;
     auto start_pose = move_group.getCurrentPose().pose;
     geometry_msgs::msg::Pose p = start_pose;
@@ -265,8 +228,6 @@ bool attachObject(moveit::planning_interface::PlanningSceneInterface& planning_s
     const std::string object_id = "target_cylinder";
 
     if (allow_collision) {
-        rclcpp::sleep_for(std::chrono::milliseconds(200));
-
         moveit_msgs::msg::AttachedCollisionObject attached_object;
         attached_object.link_name = "gripper_base";
         attached_object.object.id = object_id;

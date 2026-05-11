@@ -14,19 +14,10 @@
 #include <moveit_msgs/srv/get_planning_scene.hpp>
 #include <moveit_msgs/srv/apply_planning_scene.hpp>
 
-const double CYLINDER_H = 0.08;
-const double CYLINDER_R = 0.01;
-
 class MoveItBridge : public rclcpp::Node {
 public:
     MoveItBridge();
     void init_move_group();
-    using RobotAction = std::function<bool()>;
-
-    /**
-     * @brief 采样多个姿态进行运动规划
-     */
-    bool attitudefilter(const geometry_msgs::msg::Pose& pose, uint8_t stage, double drop_z);
 
 private:
     // 回调函数
@@ -37,47 +28,6 @@ private:
      * @brief 执行完整的抓取序列   
      */
     void GraspSequence(const geometry_msgs::msg::Pose& target_pose, const std::string& frame_id);
-
-    /**
-     * @brief 控制夹爪开合
-     */
-    bool controlGripper(bool open);
-
-    /**
-     * @brief 笛卡尔直线移动
-     */
-    bool cartesianMove(const geometry_msgs::msg::Pose& target_pose);
-
-    /*
-     * @brief 允许或禁止夹爪与物体发生碰撞
-     */
-    bool allowGripperCollision(bool allow);
-
-    /**
-     * @brief 将夹爪闭合到指定的宽度
-     */
-    bool closeGripperToObject(double object_width);
-
-    /**
-     * @brief 逻辑上将物体附着到夹爪（在规划场景中添加/移除附着物）
-     */
-    bool attachObject(bool allow_collision);
-    
-    /*
-     * @brief 向场景中添加圆柱体
-     */
-    void addCylinder(const geometry_msgs::msg::Pose& bottom_pose, const std::string& frame_id);
-
-// grasp candidates 采样函数声明
- std::vector<geometry_msgs::msg::Pose> generateGraspCandidates(const geometry_msgs::msg::Pose& base_pose);
-
-// 放置候选采样函数声明
- std::vector<geometry_msgs::msg::Pose> generatePlaceCandidates(const geometry_msgs::msg::Pose& base_pose);
-
-    /**
-     * @brief 评估并选择放置位姿（根据笛卡尔下降可行性），并执行最佳放置规划
-     */
-    bool placefilter(const geometry_msgs::msg::Pose& base_pose, double drop_distance);
 
     rclcpp::CallbackGroup::SharedPtr cb_group_;
     std::string group_name_;

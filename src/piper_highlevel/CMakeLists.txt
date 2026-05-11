@@ -30,7 +30,10 @@ endif()
 ament_package()
 
 
-add_executable(moveit_bridge src/moveit_bridge.cpp)
+add_executable(moveit_bridge
+  src/moveit_bridge.cpp
+  src/moveit_bridge_tool.cpp
+)
 target_include_directories(moveit_bridge PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
   $<INSTALL_INTERFACE:include>

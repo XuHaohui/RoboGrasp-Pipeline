@@ -344,23 +344,12 @@ bool MoveItBridgeFsm::Run(const geometry_msgs::msg::Pose& target_pose, const std
         }
         case RobotState::RELEASE: {
             RCLCPP_INFO(logger_, "State: RELEASE");
-            auto before = gripper_group_.getCurrentJointValues();
-            moveit::planning_interface::MoveGroupInterface::Plan plan;
-            const bool planned = moveit_bridge_tool::controlGripper(gripper_group_, logger_, true, plan);
-            if (!planned) {
-                fail("gripper open plan failed");
-                break;
-            }
-            gripper_group_.execute(plan);
-            waitUntilStable(move_group_, std::chrono::milliseconds(1500), std::chrono::milliseconds(150));
-            auto after = gripper_group_.getCurrentJointValues();
-            const bool updated = jointsUpdated(before, after, kJointDeltaTol);
-            const bool detach_ok = moveit_bridge_tool::attachObject(planning_scene_interface_, logger_, false);
-            const bool detached = waitForAttachedObject(planning_scene_interface_, "target_cylinder", false,
-                                                       std::chrono::milliseconds(1500));
+            const bool released = moveit_bridge_tool::releaseAtPlaceAndLift(
+                move_group_, gripper_group_, planning_scene_interface_,
+                get_scene_client_, apply_scene_client_, logger_,
+                ctx.frame_id, kJointDeltaTol, kPosePosTol);
             ctx.collision_allowed = false;
-            moveit_bridge_tool::allowGripperCollision(get_scene_client_, apply_scene_client_, logger_, false);
-            if (updated && detach_ok && detached) {
+            if (released) {
                 current_state = RobotState::RETURN_HOME;
             } else {
                 fail("release failed");

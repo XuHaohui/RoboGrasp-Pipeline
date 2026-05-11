@@ -47,6 +47,17 @@ void addCylinder(moveit::planning_interface::PlanningSceneInterface& planning_sc
                  const geometry_msgs::msg::Pose& bottom_pose,
                  const std::string& frame_id);
 
+bool releaseAtPlaceAndLift(
+    moveit::planning_interface::MoveGroupInterface& move_group,
+    moveit::planning_interface::MoveGroupInterface& gripper_group,
+    moveit::planning_interface::PlanningSceneInterface& planning_scene_interface,
+    rclcpp::Client<moveit_msgs::srv::GetPlanningScene>::SharedPtr get_scene_client,
+    rclcpp::Client<moveit_msgs::srv::ApplyPlanningScene>::SharedPtr apply_scene_client,
+    const rclcpp::Logger& logger,
+    const std::string& frame_id,
+    double joint_delta_tol,
+    double pose_pos_tol);
+
 std::vector<geometry_msgs::msg::Pose> generateGraspCandidates(const geometry_msgs::msg::Pose& base_pose);
 
 std::vector<geometry_msgs::msg::Pose> generatePlaceCandidates(const geometry_msgs::msg::Pose& base_pose);

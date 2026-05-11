@@ -1,6 +1,7 @@
 #include "piper_highlevel/moveit_bridge_tool.hpp"
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <future>
 #include <sstream>
@@ -9,6 +10,95 @@
 #include <shape_msgs/msg/solid_primitive.hpp>
 #include <tf2_geometry_msgs/tf2_geometry_msgs.hpp>
 #include <moveit/robot_state/robot_state.h>
+
+namespace {
+
+bool isPoseClose(const geometry_msgs::msg::Pose& current,
+                 const geometry_msgs::msg::Pose& target,
+                 double pos_tol,
+                 double angle_tol)
+{
+    const double dx = current.position.x - target.position.x;
+    const double dy = current.position.y - target.position.y;
+    const double dz = current.position.z - target.position.z;
+    const double pos_err = std::sqrt(dx * dx + dy * dy + dz * dz);
+
+    tf2::Quaternion q_current;
+    tf2::Quaternion q_target;
+    tf2::fromMsg(current.orientation, q_current);
+    tf2::fromMsg(target.orientation, q_target);
+    const double angle_err = q_current.angleShortestPath(q_target);
+
+    return (pos_err <= pos_tol) && (angle_err <= angle_tol);
+}
+
+bool jointsUpdated(const std::vector<double>& before,
+                   const std::vector<double>& after,
+                   double min_delta)
+{
+    if (before.size() != after.size() || before.empty()) {
+        return false;
+    }
+
+    for (size_t i = 0; i < before.size(); ++i) {
+        if (std::fabs(after[i] - before[i]) > min_delta) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+bool waitUntilStable(moveit::planning_interface::MoveGroupInterface& move_group,
+                     std::chrono::milliseconds timeout,
+                     std::chrono::milliseconds settle)
+{
+    const auto start = std::chrono::steady_clock::now();
+    auto last_pose = move_group.getCurrentPose().pose;
+    auto last_joints = move_group.getCurrentJointValues();
+    auto stable_since = std::chrono::steady_clock::now();
+
+    while (std::chrono::steady_clock::now() - start < timeout) {
+        rclcpp::sleep_for(std::chrono::milliseconds(50));
+        auto now_pose = move_group.getCurrentPose().pose;
+        auto now_joints = move_group.getCurrentJointValues();
+
+        const bool pose_stable = isPoseClose(now_pose, last_pose, 0.001, 0.02);
+        const bool joints_stable = !jointsUpdated(last_joints, now_joints, 0.0005);
+
+        if (pose_stable && joints_stable) {
+            if (std::chrono::steady_clock::now() - stable_since >= settle) {
+                return true;
+            }
+        } else {
+            stable_since = std::chrono::steady_clock::now();
+        }
+
+        last_pose = now_pose;
+        last_joints = now_joints;
+    }
+
+    return false;
+}
+
+bool waitForAttachedObject(moveit::planning_interface::PlanningSceneInterface& psi,
+                           const std::string& object_id,
+                           bool expected_attached,
+                           std::chrono::milliseconds timeout)
+{
+    const auto start = std::chrono::steady_clock::now();
+    while (std::chrono::steady_clock::now() - start < timeout) {
+        auto attached = psi.getAttachedObjects({object_id});
+        const bool is_attached = (attached.find(object_id) != attached.end());
+        if (is_attached == expected_attached) {
+            return true;
+        }
+        rclcpp::sleep_for(std::chrono::milliseconds(100));
+    }
+    return false;
+}
+
+}  // namespace
 
 namespace moveit_bridge_tool {
 
@@ -270,6 +360,64 @@ void addCylinder(moveit::planning_interface::PlanningSceneInterface& planning_sc
 
     RCLCPP_INFO(logger, "Adding cylinder to the scene");
     planning_scene_interface.addCollisionObjects(collision_objects);
+}
+
+bool releaseAtPlaceAndLift(
+    moveit::planning_interface::MoveGroupInterface& move_group,
+    moveit::planning_interface::MoveGroupInterface& gripper_group,
+    moveit::planning_interface::PlanningSceneInterface& planning_scene_interface,
+    rclcpp::Client<moveit_msgs::srv::GetPlanningScene>::SharedPtr get_scene_client,
+    rclcpp::Client<moveit_msgs::srv::ApplyPlanningScene>::SharedPtr apply_scene_client,
+    const rclcpp::Logger& logger,
+    const std::string& frame_id,
+    double joint_delta_tol,
+    double pose_pos_tol)
+{
+    auto before = gripper_group.getCurrentJointValues();
+    moveit::planning_interface::MoveGroupInterface::Plan plan;
+    const bool planned = controlGripper(gripper_group, logger, true, plan);
+    if (!planned) {
+        return false;
+    }
+
+    gripper_group.execute(plan);
+    waitUntilStable(move_group, std::chrono::milliseconds(1500), std::chrono::milliseconds(150));
+    auto after = gripper_group.getCurrentJointValues();
+    const bool updated = jointsUpdated(before, after, joint_delta_tol);
+    if (!updated) {
+        return false;
+    }
+
+    geometry_msgs::msg::Pose place_bottom = move_group.getCurrentPose().pose;
+    place_bottom.position.z -= CYLINDER_H / 2.0;
+    addCylinder(planning_scene_interface, logger, place_bottom, frame_id);
+
+    const bool detach_ok = attachObject(planning_scene_interface, logger, false);
+    const bool detached = waitForAttachedObject(planning_scene_interface, "target_cylinder", false,
+                                                std::chrono::milliseconds(1500));
+    if (!detach_ok || !detached) {
+        return false;
+    }
+
+    geometry_msgs::msg::Pose p = move_group.getCurrentPose().pose;
+    p.position.z += 0.03;
+    move_group.setStartStateToCurrentState();
+    moveit_msgs::msg::RobotTrajectory traj;
+    const bool lift_planned = cartesianMove(move_group, logger, p, traj);
+    if (!lift_planned) {
+        return false;
+    }
+
+    move_group.execute(traj);
+    waitUntilStable(move_group, std::chrono::milliseconds(2000), std::chrono::milliseconds(200));
+    const auto current = move_group.getCurrentPose().pose;
+    const bool lifted = (std::fabs(current.position.z - p.position.z) <= pose_pos_tol);
+    if (!lifted) {
+        return false;
+    }
+
+    allowGripperCollision(get_scene_client, apply_scene_client, logger, false);
+    return true;
 }
 
 std::vector<geometry_msgs::msg::Pose> generateGraspCandidates(const geometry_msgs::msg::Pose& base_pose)

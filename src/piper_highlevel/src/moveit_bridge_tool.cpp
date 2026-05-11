@@ -14,28 +14,24 @@ namespace moveit_bridge_tool {
 
 bool controlGripper(moveit::planning_interface::MoveGroupInterface& gripper_group,
                     const rclcpp::Logger& logger,
-                    bool open)
+                    bool open,
+                    moveit::planning_interface::MoveGroupInterface::Plan& plan_out)
 {
     gripper_group.setNamedTarget(open ? "open" : "close");
 
-    moveit::planning_interface::MoveGroupInterface::Plan plan;
-    if (gripper_group.plan(plan) == moveit::core::MoveItErrorCode::SUCCESS) {
-        RCLCPP_INFO(logger, "Gripper plan success, executing...");
-        if (gripper_group.execute(plan) == moveit::core::MoveItErrorCode::SUCCESS) {
-            auto current = gripper_group.getCurrentJointValues();
-            (void)current;
-            return true;
-        }
+    if (gripper_group.plan(plan_out) == moveit::core::MoveItErrorCode::SUCCESS) {
+        RCLCPP_INFO(logger, "Gripper plan success");
+        return true;
     } else {
         RCLCPP_ERROR(logger, "Gripper planning failed!");
         return false;
     }
-    return false;
 }
 
 bool cartesianMove(moveit::planning_interface::MoveGroupInterface& move_group,
                    const rclcpp::Logger& logger,
-                   const geometry_msgs::msg::Pose& target_pose)
+                   const geometry_msgs::msg::Pose& target_pose,
+                   moveit_msgs::msg::RobotTrajectory& traj_out)
 {
     move_group.setPlanningTime(5.0);
     move_group.setNumPlanningAttempts(5);
@@ -82,22 +78,8 @@ bool cartesianMove(moveit::planning_interface::MoveGroupInterface& move_group,
         return false;
     }
 
-    RCLCPP_INFO(logger, "[cartesianMove] 开始执行轨迹...");
-    auto exec_result = move_group.execute(traj);
-    if (exec_result == moveit::core::MoveItErrorCode::SUCCESS) {
-        auto current = move_group.getCurrentJointValues();
-        std::ostringstream oss3;
-        oss3 << "[cartesianMove] 执行后关节: ";
-        for (size_t i = 0; i < current.size(); ++i) {
-            oss3 << current[i] << (i + 1 == current.size() ? "" : " ");
-        }
-        RCLCPP_INFO(logger, "%s", oss3.str().c_str());
-        RCLCPP_INFO(logger, "[cartesianMove] Trajectory execution succeeded. Current joint state updated.");
-        return true;
-    } else {
-        RCLCPP_ERROR(logger, "[cartesianMove] Trajectory execution failed. Error code: %d", exec_result.val);
-    }
-    return false;
+    traj_out = traj;
+    return true;
 }
 
 bool allowGripperCollision(
@@ -195,7 +177,8 @@ bool allowGripperCollision(
 }
 
 bool closeGripperToObject(moveit::planning_interface::MoveGroupInterface& gripper_group,
-                          double object_width)
+                          double object_width,
+                          moveit::planning_interface::MoveGroupInterface::Plan& plan_out)
 {
     const double MAX_WIDTH = 0.07;
 
@@ -213,10 +196,8 @@ bool closeGripperToObject(moveit::planning_interface::MoveGroupInterface& grippe
 
     gripper_group.setJointValueTarget(joint_values);
 
-    moveit::planning_interface::MoveGroupInterface::Plan plan;
-    if (gripper_group.plan(plan) == moveit::core::MoveItErrorCode::SUCCESS) {
-        const bool ok = (gripper_group.execute(plan) == moveit::core::MoveItErrorCode::SUCCESS);
-        return ok;
+    if (gripper_group.plan(plan_out) == moveit::core::MoveItErrorCode::SUCCESS) {
+        return true;
     }
     return false;
 }
@@ -268,7 +249,7 @@ void addCylinder(moveit::planning_interface::PlanningSceneInterface& planning_sc
                  const std::string& frame_id)
 {
     moveit_msgs::msg::CollisionObject collision_object;
-    collision_object.header.frame_id = frame_id;
+    collision_object.header.frame_id = "world";
     collision_object.id = "target_cylinder";
 
     shape_msgs::msg::SolidPrimitive primitive;
@@ -329,10 +310,10 @@ std::vector<geometry_msgs::msg::Pose> generatePlaceCandidates(const geometry_msg
     const double place_offset_y = 0.0;
     const double place_offset_z = 0.0;
 
-    const int samples = 10;
+    const int samples = 10.0;
 
     for (int i = 0; i < samples; ++i) {
-        const double yaw = (2.0 * M_PI) * (static_cast<double>(i) / samples);
+        const double yaw = i * M_PI / samples;
 
         tf2::Quaternion q;
         q.setRPY(0.0, M_PI / 2.0, yaw);
@@ -356,7 +337,8 @@ bool placefilter(moveit::planning_interface::MoveGroupInterface& move_group,
                  const std::string& group_name,
                  const rclcpp::Logger& logger,
                  const geometry_msgs::msg::Pose& base_pose,
-                 double drop_distance)
+                 double drop_distance,
+                 moveit::planning_interface::MoveGroupInterface::Plan& best_plan_out)
 {
     move_group.setStartStateToCurrentState();
 
@@ -370,7 +352,7 @@ bool placefilter(moveit::planning_interface::MoveGroupInterface& move_group,
 
         auto start_state = move_group.getCurrentState();
         const moveit::core::JointModelGroup* jmg = move_group.getRobotModel()->getJointModelGroup(group_name);
-        bool ik_solvable = start_state->setFromIK(jmg, target, 0.1);
+        bool ik_solvable = start_state->setFromIK(jmg, target, 0.5);
         if (!ik_solvable) {
             continue;
         }
@@ -414,15 +396,15 @@ bool placefilter(moveit::planning_interface::MoveGroupInterface& move_group,
         return false;
     }
 
-    RCLCPP_INFO(logger, "PlaceFilter: 选中评分最高的路径 (%.2f%%)，开始执行 Stage 7...", best_fraction * 100.0);
-    move_group.setStartStateToCurrentState();
-    move_group.execute(best_plan);
+    RCLCPP_INFO(logger, "PlaceFilter: 选中评分最高的路径 (%.2f%%)", best_fraction * 100.0);
+    best_plan_out = best_plan;
     return true;
 }
 
 bool attitudefilter(moveit::planning_interface::MoveGroupInterface& move_group,
                     const std::string& group_name,
                     const rclcpp::Logger& logger,
+                    moveit::planning_interface::MoveGroupInterface::Plan& best_plan_out,
                     moveit_msgs::msg::RobotTrajectory& best_traj,
                     geometry_msgs::msg::Pose& best_pre_grasp_pose,
                     const geometry_msgs::msg::Pose& pose,
@@ -506,8 +488,7 @@ bool attitudefilter(moveit::planning_interface::MoveGroupInterface& move_group,
 
     RCLCPP_INFO(logger, "选定最优抓取角度，路径跟踪总比例: %.2f%%", best_fraction * 100.0);
 
-    move_group.setStartStateToCurrentState();
-    move_group.execute(best_plan);
+    best_plan_out = best_plan;
     best_traj = moveit_msgs::msg::RobotTrajectory();
 
     rclcpp::sleep_for(std::chrono::milliseconds(300));

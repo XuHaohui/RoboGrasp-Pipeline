@@ -20,11 +20,13 @@ namespace moveit_bridge_tool {
 
 bool controlGripper(moveit::planning_interface::MoveGroupInterface& gripper_group,
                     const rclcpp::Logger& logger,
-                    bool open);
+                    bool open,
+                    moveit::planning_interface::MoveGroupInterface::Plan& plan_out);
 
 bool cartesianMove(moveit::planning_interface::MoveGroupInterface& move_group,
                    const rclcpp::Logger& logger,
-                   const geometry_msgs::msg::Pose& target_pose);
+                   const geometry_msgs::msg::Pose& target_pose,
+                   moveit_msgs::msg::RobotTrajectory& traj_out);
 
 bool allowGripperCollision(
     rclcpp::Client<moveit_msgs::srv::GetPlanningScene>::SharedPtr get_scene_client,
@@ -33,7 +35,8 @@ bool allowGripperCollision(
     bool allow);
 
 bool closeGripperToObject(moveit::planning_interface::MoveGroupInterface& gripper_group,
-                          double object_width);
+                          double object_width,
+                          moveit::planning_interface::MoveGroupInterface::Plan& plan_out);
 
 bool attachObject(moveit::planning_interface::PlanningSceneInterface& planning_scene_interface,
                   const rclcpp::Logger& logger,
@@ -52,11 +55,13 @@ bool placefilter(moveit::planning_interface::MoveGroupInterface& move_group,
                  const std::string& group_name,
                  const rclcpp::Logger& logger,
                  const geometry_msgs::msg::Pose& base_pose,
-                 double drop_distance);
+                 double drop_distance,
+                 moveit::planning_interface::MoveGroupInterface::Plan& best_plan_out);
 
 bool attitudefilter(moveit::planning_interface::MoveGroupInterface& move_group,
                     const std::string& group_name,
                     const rclcpp::Logger& logger,
+                    moveit::planning_interface::MoveGroupInterface::Plan& best_plan_out,
                     moveit_msgs::msg::RobotTrajectory& best_traj,
                     geometry_msgs::msg::Pose& best_pre_grasp_pose,
                     const geometry_msgs::msg::Pose& pose,

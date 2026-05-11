@@ -1,0 +1,18 @@
+digraph G {
+"world" -> "map"[label=" Broadcaster: default_authority\nAverage rate: 10000.0\nBuffer length: 0.0\nMost recent transform: 0.0\nOldest transform: 0.0\n"];
+"odom" -> "base_link"[label=" Broadcaster: default_authority\nAverage rate: 20.232\nBuffer length: 4.3\nMost recent transform: 1778504663.637871\nOldest transform: 1778504659.337773\n"];
+"link6" -> "gripper_base"[label=" Broadcaster: default_authority\nAverage rate: 10000.0\nBuffer length: 0.0\nMost recent transform: 0.0\nOldest transform: 0.0\n"];
+"link5" -> "link6"[label=" Broadcaster: default_authority\nAverage rate: 14.487\nBuffer length: 4.97\nMost recent transform: 1778504663.636811\nOldest transform: 1778504658.666798\n"];
+"base_link" -> "link1"[label=" Broadcaster: default_authority\nAverage rate: 14.487\nBuffer length: 4.97\nMost recent transform: 1778504663.636811\nOldest transform: 1778504658.666798\n"];
+"link1" -> "link2"[label=" Broadcaster: default_authority\nAverage rate: 14.487\nBuffer length: 4.97\nMost recent transform: 1778504663.636811\nOldest transform: 1778504658.666798\n"];
+"link2" -> "link3"[label=" Broadcaster: default_authority\nAverage rate: 14.487\nBuffer length: 4.97\nMost recent transform: 1778504663.636811\nOldest transform: 1778504658.666798\n"];
+"link3" -> "link4"[label=" Broadcaster: default_authority\nAverage rate: 14.487\nBuffer length: 4.97\nMost recent transform: 1778504663.636811\nOldest transform: 1778504658.666798\n"];
+"link4" -> "link5"[label=" Broadcaster: default_authority\nAverage rate: 14.487\nBuffer length: 4.97\nMost recent transform: 1778504663.636811\nOldest transform: 1778504658.666798\n"];
+"gripper_base" -> "link7"[label=" Broadcaster: default_authority\nAverage rate: 14.487\nBuffer length: 4.97\nMost recent transform: 1778504663.636811\nOldest transform: 1778504658.666798\n"];
+"base_link" -> "laser_link"[label=" Broadcaster: default_authority\nAverage rate: 10000.0\nBuffer length: 0.0\nMost recent transform: 0.0\nOldest transform: 0.0\n"];
+"map" -> "odom"[label=" Broadcaster: default_authority\nAverage rate: 10000.0\nBuffer length: 0.0\nMost recent transform: 0.0\nOldest transform: 0.0\n"];
+edge [style=invis];
+ subgraph cluster_legend { style=bold; color=black; label ="view_frames Result";
+"Recorded at time: 1778504663.6442966"[ shape=plaintext ] ;
+}->"world";
+}

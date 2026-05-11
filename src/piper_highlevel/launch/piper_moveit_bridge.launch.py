@@ -68,9 +68,9 @@ def _add_static_tf(ld):
     static_tf_node = Node(
         package="tf2_ros",
         executable="static_transform_publisher",
-        name="world_to_base_link",
+        name="world_to_map",
         output="screen",
-        arguments=["0", "0", "0", "0", "0", "0", "world", "base_link"],
+        arguments=["0", "0", "0", "0", "0", "0", "world", "map"],
     )
     ld.add_action(static_tf_node)
 

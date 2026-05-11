@@ -70,6 +70,38 @@ bool waitForAttachedObject(moveit::planning_interface::PlanningSceneInterface& p
     return false;
 }
 
+bool waitUntilStable(moveit::planning_interface::MoveGroupInterface& move_group,
+                     std::chrono::milliseconds timeout,
+                     std::chrono::milliseconds settle)
+{
+    const auto start = std::chrono::steady_clock::now();
+    auto last_pose = move_group.getCurrentPose().pose;
+    auto last_joints = move_group.getCurrentJointValues();
+    auto stable_since = std::chrono::steady_clock::now();
+
+    while (std::chrono::steady_clock::now() - start < timeout) {
+        rclcpp::sleep_for(std::chrono::milliseconds(50));
+        auto now_pose = move_group.getCurrentPose().pose;
+        auto now_joints = move_group.getCurrentJointValues();
+
+        const bool pose_stable = isPoseClose(now_pose, last_pose, 0.001, 0.02);
+        const bool joints_stable = !jointsUpdated(last_joints, now_joints, 0.0005);
+
+        if (pose_stable && joints_stable) {
+            if (std::chrono::steady_clock::now() - stable_since >= settle) {
+                return true;
+            }
+        } else {
+            stable_since = std::chrono::steady_clock::now();
+        }
+
+        last_pose = now_pose;
+        last_joints = now_joints;
+    }
+
+    return false;
+}
+
 }  // namespace
 
 MoveItBridgeFsm::MoveItBridgeFsm(
@@ -143,8 +175,9 @@ bool MoveItBridgeFsm::Run(const geometry_msgs::msg::Pose& target_pose, const std
             return false;
         }
 
-        const auto exec_res = move_group_.execute(plan);
-        return (exec_res == moveit::core::MoveItErrorCode::SUCCESS);
+        move_group_.execute(plan);
+        waitUntilStable(move_group_, std::chrono::milliseconds(2000), std::chrono::milliseconds(200));
+        return true;
     };
 
     while (current_state != RobotState::IDLE && current_state != RobotState::FAILED) {
@@ -152,9 +185,16 @@ bool MoveItBridgeFsm::Run(const geometry_msgs::msg::Pose& target_pose, const std
         case RobotState::OPEN_GRIPPER: {
             RCLCPP_INFO(logger_, "State: OPEN_GRIPPER");
             auto before = gripper_group_.getCurrentJointValues();
-            const bool ok = moveit_bridge_tool::controlGripper(gripper_group_, logger_, true);
+            moveit::planning_interface::MoveGroupInterface::Plan plan;
+            const bool planned = moveit_bridge_tool::controlGripper(gripper_group_, logger_, true, plan);
+            if (!planned) {
+                fail("gripper plan failed");
+                break;
+            }
+            gripper_group_.execute(plan);
+            waitUntilStable(move_group_, std::chrono::milliseconds(1500), std::chrono::milliseconds(150));
             auto after = gripper_group_.getCurrentJointValues();
-            if (ok && jointsUpdated(before, after, kJointDeltaTol)) {
+            if (jointsUpdated(before, after, kJointDeltaTol)) {
                 last_stable_state = RobotState::OPEN_GRIPPER;
                 current_state = RobotState::PRE_GRASP;
             } else {
@@ -196,10 +236,17 @@ bool MoveItBridgeFsm::Run(const geometry_msgs::msg::Pose& target_pose, const std
             p.position.z = target_pose.position.z + (CYLINDER_H / 2.0);
 
             move_group_.setStartStateToCurrentState();
-            const bool ok = moveit_bridge_tool::cartesianMove(move_group_, logger_, p);
+            moveit_msgs::msg::RobotTrajectory traj;
+            const bool planned = moveit_bridge_tool::cartesianMove(move_group_, logger_, p, traj);
+            if (!planned) {
+                fail("approach planning failed");
+                break;
+            }
+            move_group_.execute(traj);
+            waitUntilStable(move_group_, std::chrono::milliseconds(2000), std::chrono::milliseconds(200));
             const auto current = move_group_.getCurrentPose().pose;
             const bool pose_ok = std::fabs(current.position.z - p.position.z) <= kPosePosTol;
-            if (ok && pose_ok) {
+            if (pose_ok) {
                 current_state = RobotState::GRASP;
             } else {
                 fail("approach cartesian move failed");
@@ -209,13 +256,20 @@ bool MoveItBridgeFsm::Run(const geometry_msgs::msg::Pose& target_pose, const std
         case RobotState::GRASP: {
             RCLCPP_INFO(logger_, "State: GRASP");
             auto before = gripper_group_.getCurrentJointValues();
-            const bool close_ok = moveit_bridge_tool::closeGripperToObject(gripper_group_, CYLINDER_R * 2);
+            moveit::planning_interface::MoveGroupInterface::Plan plan;
+            const bool planned = moveit_bridge_tool::closeGripperToObject(gripper_group_, CYLINDER_R * 2, plan);
+            if (!planned) {
+                fail("gripper close plan failed");
+                break;
+            }
+            gripper_group_.execute(plan);
+            waitUntilStable(move_group_, std::chrono::milliseconds(1500), std::chrono::milliseconds(150));
             auto after = gripper_group_.getCurrentJointValues();
             const bool updated = jointsUpdated(before, after, kJointDeltaTol);
             const bool attach_ok = moveit_bridge_tool::attachObject(planning_scene_interface_, logger_, true);
             const bool attached = waitForAttachedObject(planning_scene_interface_, "target_cylinder", true,
                                                        std::chrono::milliseconds(1500));
-            if (close_ok && updated && attach_ok && attached) {
+            if (updated && attach_ok && attached) {
                 current_state = RobotState::LIFT;
             } else {
                 fail("grasp failed");
@@ -227,9 +281,16 @@ bool MoveItBridgeFsm::Run(const geometry_msgs::msg::Pose& target_pose, const std
             geometry_msgs::msg::Pose p = move_group_.getCurrentPose().pose;
             p.position.z += 0.03;
             move_group_.setStartStateToCurrentState();
-            const bool ok = moveit_bridge_tool::cartesianMove(move_group_, logger_, p);
+            moveit_msgs::msg::RobotTrajectory traj;
+            const bool planned = moveit_bridge_tool::cartesianMove(move_group_, logger_, p, traj);
+            if (!planned) {
+                fail("lift planning failed");
+                break;
+            }
+            move_group_.execute(traj);
+            waitUntilStable(move_group_, std::chrono::milliseconds(2000), std::chrono::milliseconds(200));
             const auto current = move_group_.getCurrentPose().pose;
-            if (ok && isPoseClose(current, p, kPosePosTol, kPoseAngleTol)) {
+            if (isPoseClose(current, p, kPosePosTol, kPoseAngleTol)) {
                 last_stable_state = RobotState::LIFT;
                 current_state = RobotState::PRE_PLACE;
             } else {
@@ -265,9 +326,16 @@ bool MoveItBridgeFsm::Run(const geometry_msgs::msg::Pose& target_pose, const std
             geometry_msgs::msg::Pose p = move_group_.getCurrentPose().pose;
             p.position.z = p.position.z - 0.03;
             move_group_.setStartStateToCurrentState();
-            const bool ok = moveit_bridge_tool::cartesianMove(move_group_, logger_, p);
+            moveit_msgs::msg::RobotTrajectory traj;
+            const bool planned = moveit_bridge_tool::cartesianMove(move_group_, logger_, p, traj);
+            if (!planned) {
+                fail("place planning failed");
+                break;
+            }
+            move_group_.execute(traj);
+            waitUntilStable(move_group_, std::chrono::milliseconds(2000), std::chrono::milliseconds(200));
             const auto current = move_group_.getCurrentPose().pose;
-            if (ok && std::fabs(current.position.z - p.position.z) <= kPosePosTol) {
+            if (std::fabs(current.position.z - p.position.z) <= kPosePosTol) {
                 current_state = RobotState::RELEASE;
             } else {
                 fail("place cartesian move failed");
@@ -277,7 +345,14 @@ bool MoveItBridgeFsm::Run(const geometry_msgs::msg::Pose& target_pose, const std
         case RobotState::RELEASE: {
             RCLCPP_INFO(logger_, "State: RELEASE");
             auto before = gripper_group_.getCurrentJointValues();
-            const bool open_ok = moveit_bridge_tool::controlGripper(gripper_group_, logger_, true);
+            moveit::planning_interface::MoveGroupInterface::Plan plan;
+            const bool planned = moveit_bridge_tool::controlGripper(gripper_group_, logger_, true, plan);
+            if (!planned) {
+                fail("gripper open plan failed");
+                break;
+            }
+            gripper_group_.execute(plan);
+            waitUntilStable(move_group_, std::chrono::milliseconds(1500), std::chrono::milliseconds(150));
             auto after = gripper_group_.getCurrentJointValues();
             const bool updated = jointsUpdated(before, after, kJointDeltaTol);
             const bool detach_ok = moveit_bridge_tool::attachObject(planning_scene_interface_, logger_, false);
@@ -285,7 +360,7 @@ bool MoveItBridgeFsm::Run(const geometry_msgs::msg::Pose& target_pose, const std
                                                        std::chrono::milliseconds(1500));
             ctx.collision_allowed = false;
             moveit_bridge_tool::allowGripperCollision(get_scene_client_, apply_scene_client_, logger_, false);
-            if (open_ok && updated && detach_ok && detached) {
+            if (updated && detach_ok && detached) {
                 current_state = RobotState::RETURN_HOME;
             } else {
                 fail("release failed");
@@ -311,11 +386,8 @@ bool MoveItBridgeFsm::Run(const geometry_msgs::msg::Pose& target_pose, const std
                 break;
             }
 
-            const auto exec_res = move_group_.execute(plan);
-            if (exec_res != moveit::core::MoveItErrorCode::SUCCESS) {
-                fail("return home execute failed");
-                break;
-            }
+            move_group_.execute(plan);
+            waitUntilStable(move_group_, std::chrono::milliseconds(3000), std::chrono::milliseconds(300));
 
             auto current = move_group_.getCurrentJointValues();
             bool near_home = true;
@@ -347,12 +419,19 @@ bool MoveItBridgeFsm::Run(const geometry_msgs::msg::Pose& target_pose, const std
         }
         case RobotState::RECOVER: {
             ctx.retry_count += 1;
-            RCLCPP_WARN(logger_, "Recovering from state %d, last stable %d (retry %d/%d)",
-                        static_cast<int>(ctx.failed_state), static_cast<int>(last_stable_state),
-                        ctx.retry_count, kMaxRetries);
+            RCLCPP_WARN(logger_, "\033[33mRecovering from state %d, last stable %d (retry %d/%d)\033[0m",
+                static_cast<int>(ctx.failed_state), 
+                static_cast<int>(last_stable_state),
+                ctx.retry_count, 
+                kMaxRetries);
 
             if (ctx.retry_count > kMaxRetries) {
                 current_state = RobotState::FAILED;
+                break;
+            }
+
+            if (ctx.failed_state == RobotState::OPEN_GRIPPER) {
+                current_state = RobotState::OPEN_GRIPPER;
                 break;
             }
 
@@ -404,7 +483,7 @@ bool MoveItBridgeFsm::Run(const geometry_msgs::msg::Pose& target_pose, const std
     }
 
     if (current_state == RobotState::FAILED) {
-        RCLCPP_ERROR(logger_, "Pipeline failed after retries");
+        RCLCPP_ERROR(logger_, "\033[1;31mPipeline failed after retries\033[0m");
         return false;
     }
 

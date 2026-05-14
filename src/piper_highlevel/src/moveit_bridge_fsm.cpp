@@ -150,9 +150,9 @@ bool MoveItBridgeFsm::Run(const geometry_msgs::msg::Pose& target_pose, const std
     ctx.grasp_candidates = moveit_bridge_tool::generateGraspCandidates(grasp_seed);
 
     geometry_msgs::msg::Pose place_seed = target_pose;
-    place_seed.position.x = 0.40;
+    place_seed.position.x = 0.45;
     place_seed.position.y = 0.05;
-    place_seed.position.z = CYLINDER_H / 2.0 + 0.12;
+    place_seed.position.z = CYLINDER_H / 2.0 + 0.2;
     ctx.place_candidates = moveit_bridge_tool::generatePlaceCandidates(place_seed);
 
     RobotState current_state = RobotState::OPEN_GRIPPER;
@@ -279,7 +279,7 @@ bool MoveItBridgeFsm::Run(const geometry_msgs::msg::Pose& target_pose, const std
         case RobotState::LIFT: {
             RCLCPP_INFO(logger_, "State: LIFT");
             geometry_msgs::msg::Pose p = move_group_.getCurrentPose().pose;
-            p.position.z += 0.03;
+            p.position.z += 0.1;
             move_group_.setStartStateToCurrentState();
             moveit_msgs::msg::RobotTrajectory traj;
             const bool planned = moveit_bridge_tool::cartesianMove(move_group_, logger_, p, traj);

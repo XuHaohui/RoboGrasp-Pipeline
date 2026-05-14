@@ -62,21 +62,4 @@ std::vector<geometry_msgs::msg::Pose> generateGraspCandidates(const geometry_msg
 
 std::vector<geometry_msgs::msg::Pose> generatePlaceCandidates(const geometry_msgs::msg::Pose& base_pose);
 
-bool placefilter(moveit::planning_interface::MoveGroupInterface& move_group,
-                 const std::string& group_name,
-                 const rclcpp::Logger& logger,
-                 const geometry_msgs::msg::Pose& base_pose,
-                 double drop_distance,
-                 moveit::planning_interface::MoveGroupInterface::Plan& best_plan_out);
-
-bool attitudefilter(moveit::planning_interface::MoveGroupInterface& move_group,
-                    const std::string& group_name,
-                    const rclcpp::Logger& logger,
-                    moveit::planning_interface::MoveGroupInterface::Plan& best_plan_out,
-                    moveit_msgs::msg::RobotTrajectory& best_traj,
-                    geometry_msgs::msg::Pose& best_pre_grasp_pose,
-                    const geometry_msgs::msg::Pose& pose,
-                    uint8_t stage,
-                    double drop_z);
-
 }  // namespace moveit_bridge_tool

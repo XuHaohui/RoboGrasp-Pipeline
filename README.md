@@ -47,6 +47,20 @@ cd ../../../
 
 然后你就会拥有 MuJoCo/MoveIt 所需的相关包与资源文件。
 
+## 环境配置
+
+为了方便地在每次使用工作区时设置环境变量，本仓库提供了一个快捷脚本：
+
+```bash
+source scripts/setup_env.sh
+```
+
+该脚本会自动：
+- 设置 `RMW_IMPLEMENTATION=rmw_cyclonedds_cpp`（使用 CycloneDDS 中间件）
+- Source 工作区的 `install/setup.bash`
+
+后续所有涉及 ROS 2 命令的操作都可以用这个一行脚本代替繁琐的手工操作。
+
 ## 快速开始（构建工作区）
 
 在工作区根目录执行：
@@ -72,7 +86,7 @@ pip3 install mujoco_py
 colcon build --symlink-install
 
 # 4) 生效工作区环境
-source install/setup.bash
+source scripts/setup_env.sh
 ```
 
 只构建关键包（开发 `piper_highlevel` 时更快）：
@@ -89,7 +103,7 @@ colcon build --symlink-install \
 有夹爪：
 
 ```bash
-source install/setup.bash
+source scripts/setup_env.sh
 ros2 launch piper_with_gripper_moveit demo.launch.py
 ```
 
@@ -103,14 +117,14 @@ ros2 launch piper_with_gripper_moveit demo.launch.py
 启动：
 
 ```bash
-source install/setup.bash
+source scripts/setup_env.sh
 ros2 launch piper_highlevel piper_moveit_bridge.launch.py
 ```
 
 发布一个目标位姿（示例）：
 
 ```bash
-source install/setup.bash
+source scripts/setup_env.sh
 ros2 topic pub /target_pose geometry_msgs/msg/PoseStamped "{\
   header: { frame_id: 'world' },\
   pose: {\
@@ -141,14 +155,14 @@ MuJoCo 节点会订阅 `/joint_states` 并驱动 MuJoCo 模型渲染；你可以
 终端 A：启动 MoveIt（move_group + bridge）：
 
 ```bash
-source install/setup.bash
+source scripts/setup_env.sh
 ros2 launch piper_highlevel piper_moveit_bridge.launch.py
 ```
 
 终端 B：启动 MuJoCo 可视化（有夹爪）：
 
 ```bash
-source install/setup.bash
+source scripts/setup_env.sh
 ros2 run piper_mujoco piper_mujoco_ctrl.py
 ```
 
@@ -156,7 +170,7 @@ ros2 run piper_mujoco piper_mujoco_ctrl.py
 
 注意：
 
-- `piper_mujoco` 依赖 `piper_description` 包中 `mujoco_model/piper_description.xml`；若提示找不到模型文件，请确认 `piper_description` 已正确构建并被 `source install/setup.bash`。
+- `piper_mujoco` 依赖 `piper_description` 包中 `mujoco_model/piper_description.xml`；若提示找不到模型文件，请确认 `piper_description` 已正确构建并被 `source scripts/setup_env.sh`。
 - MuJoCo Viewer 需要图形界面（X11/Wayland + OpenGL）。在无桌面环境下运行需要额外配置虚拟显示。
 
 ## 目录结构
@@ -189,11 +203,37 @@ source ~/.bashrc
 
 ## 版本记录 / 路线图
 
-### 上一版本（已完成）
-大大提高stage7-8成功率 并修复一些不必要的程序
+## 上一版本（已完成）
+这次更新添加了一个完整的抓取和放置流水线，让机器人能自动完成从抓取物体到放到指定位置的全过程。主要新增内容包括：
 
-### 下一版本（计划）
-记录初始状态，完成真正意义的闭环
+状态机流水线：实现了完整的pick-and-place流程，包含以下状态：
+
+OPEN_GRIPPER：打开夹爪
+PRE_GRASP：移动到抓取预备位置
+APPROACH：接近物体
+GRASP：闭合夹爪抓取
+LIFT：抬升物体
+PRE_PLACE：移动到放置预备位置
+PLACE：放下物体
+RELEASE：释放夹爪
+RETURN_HOME：返回初始位置
+RECOVER：失败恢复机制
+MoveIt工具函数库（新增moveit_bridge_tool.cpp）：
+
+夹爪控制：开合夹爪、根据物体尺寸调整夹爪宽度
+路径规划：笛卡尔运动、直线移动
+碰撞管理：允许/禁止夹爪与物体碰撞
+物体管理：添加圆柱体到场景、附加/分离物体到夹爪
+候选点生成：自动生成多个抓取和放置角度候选点
+过滤器：选择最佳抓取/放置角度，提高成功率
+稳定性检测：等待运动稳定、关节变化检测
+这些功能让机器人能够更智能地处理复杂的抓取任务，自动尝试不同角度，提高整体成功率。
+
+改用：CycloneDDS
+添加放置后后撤
+
+## 下一版本（计划）
+添加回到home位置之后关闭加爪的功能，实现流程可循环
 
 ## 许可证
 

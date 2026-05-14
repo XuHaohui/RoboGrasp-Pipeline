@@ -10,6 +10,7 @@
 #include <shape_msgs/msg/solid_primitive.hpp>
 #include <tf2_geometry_msgs/tf2_geometry_msgs.hpp>
 #include <moveit/robot_state/robot_state.h>
+#include <moveit/planning_scene/planning_scene.h>
 
 namespace {
 
@@ -96,6 +97,25 @@ bool waitForAttachedObject(moveit::planning_interface::PlanningSceneInterface& p
         rclcpp::sleep_for(std::chrono::milliseconds(100));
     }
     return false;
+}
+
+geometry_msgs::msg::Pose applyYawOffset(const geometry_msgs::msg::Pose& base_pose,
+                                        double yaw_offset)
+{
+    tf2::Quaternion q_base;
+    tf2::fromMsg(base_pose.orientation, q_base);
+
+    double roll = 0.0;
+    double pitch = 0.0;
+    double yaw = 0.0;
+    tf2::Matrix3x3(q_base).getRPY(roll, pitch, yaw);
+
+    tf2::Quaternion q_out;
+    q_out.setRPY(roll, pitch, yaw + yaw_offset);
+
+    geometry_msgs::msg::Pose out = base_pose;
+    out.orientation = tf2::toMsg(q_out);
+    return out;
 }
 
 }  // namespace
@@ -321,16 +341,19 @@ bool attachObject(moveit::planning_interface::PlanningSceneInterface& planning_s
             planning_scene_interface.applyCollisionObject(remove_obj);
         }
         return attached_ok;
+    }else {
+        moveit_msgs::msg::AttachedCollisionObject detach_object;
+
+        detach_object.link_name = "gripper_base";
+        detach_object.object.id = object_id;
+        detach_object.object.operation =moveit_msgs::msg::CollisionObject::REMOVE;
+
+        RCLCPP_INFO(logger, "Detaching object from gripper...");
+
+        const bool detached_ok =planning_scene_interface.applyAttachedCollisionObject(detach_object);
+
+        return detached_ok;
     }
-
-    moveit_msgs::msg::AttachedCollisionObject detach_object;
-    detach_object.object.id = object_id;
-    detach_object.link_name = "gripper_base";
-    detach_object.object.operation = moveit_msgs::msg::CollisionObject::REMOVE;
-
-    RCLCPP_INFO(logger, "Detaching object from gripper...");
-
-    return planning_scene_interface.applyAttachedCollisionObject(detach_object);
 }
 
 void addCylinder(moveit::planning_interface::PlanningSceneInterface& planning_scene_interface,
@@ -388,8 +411,16 @@ bool releaseAtPlaceAndLift(
         return false;
     }
 
-    geometry_msgs::msg::Pose place_bottom = move_group.getCurrentPose().pose;
+    geometry_msgs::msg::Pose place_bottom;
+    auto tcp_pose = move_group.getCurrentPose().pose;
+    place_bottom.position = tcp_pose.position;
+    place_bottom.position.x += 0.12 ;
+    place_bottom.position.y -= 0.02 ;
     place_bottom.position.z -= CYLINDER_H / 2.0;
+    place_bottom.orientation.x = 0;
+    place_bottom.orientation.y = 0;
+    place_bottom.orientation.z = 0;
+    place_bottom.orientation.w = 1;
     addCylinder(planning_scene_interface, logger, place_bottom, frame_id);
 
     const bool detach_ok = attachObject(planning_scene_interface, logger, false);
@@ -417,6 +448,24 @@ bool releaseAtPlaceAndLift(
     }
 
     allowGripperCollision(get_scene_client, apply_scene_client, logger, false);
+
+    geometry_msgs::msg::Pose retreat = move_group.getCurrentPose().pose;
+    retreat.position.z -= 0.05;  
+
+    move_group.setStartStateToCurrentState();
+
+    moveit_msgs::msg::RobotTrajectory retreat_traj;
+    const bool ok = moveit_bridge_tool::cartesianMove(move_group,logger,retreat,retreat_traj);
+
+    if (!ok) {
+        RCLCPP_ERROR(logger, "retreat failed");
+        return false;
+    }
+
+    move_group.execute(retreat_traj);
+
+    waitUntilStable(move_group,std::chrono::milliseconds(2000),std::chrono::milliseconds(200));
+
     return true;
 }
 
@@ -450,220 +499,33 @@ std::vector<geometry_msgs::msg::Pose> generateGraspCandidates(const geometry_msg
     return candidates;
 }
 
-std::vector<geometry_msgs::msg::Pose> generatePlaceCandidates(const geometry_msgs::msg::Pose& base_pose)
+std::vector<geometry_msgs::msg::Pose>
+generatePlaceCandidates(const geometry_msgs::msg::Pose& base_pose)
 {
     std::vector<geometry_msgs::msg::Pose> candidates;
 
-    const double place_offset_x = 0.0;
-    const double place_offset_y = 0.0;
-    const double place_offset_z = 0.0;
+    tf2::Quaternion q;
+    q.setRPY(0, M_PI / 2.0, 0);
 
-    const int samples = 10.0;
+    const double dx[] = {0.0, 0.02, -0.02};
+    const double dy[] = {0.0, 0.02, -0.02};
 
-    for (int i = 0; i < samples; ++i) {
-        const double yaw = i * M_PI / samples;
+    for (double x : dx) {
+        for (double y : dy) {
 
-        tf2::Quaternion q;
-        q.setRPY(0.0, M_PI / 2.0, yaw);
+            geometry_msgs::msg::Pose p = base_pose;
 
-        tf2::Vector3 offset_local(place_offset_x, place_offset_y, -place_offset_z);
-        tf2::Vector3 offset_world = tf2::quatRotate(q, offset_local);
+            p.position.x += x;
+            p.position.y += y;
+            p.position.z += 0;
 
-        geometry_msgs::msg::Pose p = base_pose;
-        p.position.x = base_pose.position.x + offset_world.x();
-        p.position.y = base_pose.position.y + offset_world.y();
-        p.position.z = base_pose.position.z + offset_world.z();
-        p.orientation = tf2::toMsg(q);
+            p.orientation = tf2::toMsg(q);
 
-        candidates.push_back(p);
+            candidates.push_back(p);
+        }
     }
 
     return candidates;
-}
-
-bool placefilter(moveit::planning_interface::MoveGroupInterface& move_group,
-                 const std::string& group_name,
-                 const rclcpp::Logger& logger,
-                 const geometry_msgs::msg::Pose& base_pose,
-                 double drop_distance,
-                 moveit::planning_interface::MoveGroupInterface::Plan& best_plan_out)
-{
-    move_group.setStartStateToCurrentState();
-
-    double best_fraction = -1.0;
-    moveit::planning_interface::MoveGroupInterface::Plan best_plan;
-
-    auto candidates = generatePlaceCandidates(base_pose);
-
-    for (const auto& target : candidates) {
-        move_group.setStartStateToCurrentState();
-
-        auto start_state = move_group.getCurrentState();
-        const moveit::core::JointModelGroup* jmg = move_group.getRobotModel()->getJointModelGroup(group_name);
-        bool ik_solvable = start_state->setFromIK(jmg, target, 0.5);
-        if (!ik_solvable) {
-            continue;
-        }
-
-        move_group.setPoseTarget(target);
-
-        moveit::planning_interface::MoveGroupInterface::Plan pre_plan;
-        auto plan_res = move_group.plan(pre_plan);
-        if (plan_res != moveit::core::MoveItErrorCode::SUCCESS ||
-            pre_plan.trajectory_.joint_trajectory.points.empty()) {
-            continue;
-        }
-
-        moveit::core::RobotStatePtr robot_state = move_group.getCurrentState();
-        robot_state->setJointGroupPositions(group_name, pre_plan.trajectory_.joint_trajectory.points.back().positions);
-        move_group.setStartState(*robot_state);
-
-        std::vector<geometry_msgs::msg::Pose> waypoints_down;
-        geometry_msgs::msg::Pose drop_pose = target;
-        drop_pose.position.z = drop_distance;
-        waypoints_down.push_back(drop_pose);
-
-        moveit_msgs::msg::RobotTrajectory traj_down;
-        double fraction_down = move_group.computeCartesianPath(
-            waypoints_down, 0.01, 0.0, traj_down);
-
-        if (fraction_down > best_fraction) {
-            best_fraction = fraction_down;
-            best_plan = pre_plan;
-        }
-
-        move_group.setStartStateToCurrentState();
-
-        if (fraction_down >= 0.9) {
-            break;
-        }
-    }
-
-    if (best_fraction <= 0.0) {
-        RCLCPP_ERROR(logger, "PlaceFilter: 所有角度都无法规划路径！");
-        return false;
-    }
-
-    RCLCPP_INFO(logger, "PlaceFilter: 选中评分最高的路径 (%.2f%%)", best_fraction * 100.0);
-    best_plan_out = best_plan;
-    return true;
-}
-
-bool attitudefilter(moveit::planning_interface::MoveGroupInterface& move_group,
-                    const std::string& group_name,
-                    const rclcpp::Logger& logger,
-                    moveit::planning_interface::MoveGroupInterface::Plan& best_plan_out,
-                    moveit_msgs::msg::RobotTrajectory& best_traj,
-                    geometry_msgs::msg::Pose& best_pre_grasp_pose,
-                    const geometry_msgs::msg::Pose& pose,
-                    uint8_t stage,
-                    double drop_z)
-{
-    (void)stage;
-
-    move_group.setStartStateToCurrentState();
-
-    best_traj = moveit_msgs::msg::RobotTrajectory();
-    double best_fraction = -1.0;
-    moveit::planning_interface::MoveGroupInterface::Plan best_plan;
-    moveit_msgs::msg::RobotTrajectory best_down_traj_sim;
-    double best_down_fraction_sim = -1.0;
-    (void)best_down_traj_sim;
-    (void)best_down_fraction_sim;
-
-    auto candidates = generateGraspCandidates(pose);
-
-    for (auto& target : candidates) {
-        geometry_msgs::msg::Pose pre_grasp = target;
-
-        move_group.setPoseTarget(target);
-        moveit::planning_interface::MoveGroupInterface::Plan pre_plan;
-        auto plan_res = move_group.plan(pre_plan);
-        if (plan_res != moveit::core::MoveItErrorCode::SUCCESS ||
-            pre_plan.trajectory_.joint_trajectory.points.empty()) {
-            continue;
-        }
-
-        moveit::core::RobotStatePtr robot_state = move_group.getCurrentState();
-        robot_state->setJointGroupPositions(group_name, pre_plan.trajectory_.joint_trajectory.points.back().positions);
-        move_group.setStartState(*robot_state);
-
-        std::vector<geometry_msgs::msg::Pose> waypoints_down;
-        geometry_msgs::msg::Pose drop_pose = pre_grasp;
-        drop_pose.position.z = drop_z;
-        waypoints_down.push_back(drop_pose);
-
-        moveit_msgs::msg::RobotTrajectory traj_down;
-        double fraction_down = move_group.computeCartesianPath(
-            waypoints_down, 0.01, 0.0, traj_down);
-
-        double fraction_up = 0.0;
-        moveit_msgs::msg::RobotTrajectory test_traj_up;
-        if (fraction_down >= 1.0) {
-            robot_state->setJointGroupPositions(group_name, traj_down.joint_trajectory.points.back().positions);
-            move_group.setStartState(*robot_state);
-
-            std::vector<geometry_msgs::msg::Pose> waypoints_up;
-            geometry_msgs::msg::Pose lift_pose = drop_pose;
-            lift_pose.position.z += 0.05;
-            waypoints_up.push_back(lift_pose);
-
-            fraction_up = move_group.computeCartesianPath(waypoints_up, 0.01, 0.0, test_traj_up);
-        }
-
-        double total_fraction = fraction_down + fraction_up;
-        if (total_fraction > best_fraction) {
-            best_fraction = total_fraction;
-            best_plan = pre_plan;
-            best_pre_grasp_pose = pre_grasp;
-        }
-
-        RCLCPP_INFO(logger, "正在尝试规划到位姿: X=%.2f, Y=%.2f, Z=%.2f",
-                    pre_grasp.position.x, pre_grasp.position.y, pre_grasp.position.z);
-
-        move_group.setStartStateToCurrentState();
-
-        if (fraction_down >= 0.9 && fraction_up >= 0.9) {
-            break;
-        }
-    }
-
-    if (best_fraction <= 0.0) {
-        RCLCPP_ERROR(logger, "所有角度都无法规划路径！");
-        best_traj = moveit_msgs::msg::RobotTrajectory();
-        return false;
-    }
-
-    RCLCPP_INFO(logger, "选定最优抓取角度，路径跟踪总比例: %.2f%%", best_fraction * 100.0);
-
-    best_plan_out = best_plan;
-    best_traj = moveit_msgs::msg::RobotTrajectory();
-
-    rclcpp::sleep_for(std::chrono::milliseconds(300));
-    move_group.setStartStateToCurrentState();
-
-    geometry_msgs::msg::Pose drop_pose = move_group.getCurrentPose().pose;
-    drop_pose.position.z = drop_z;
-
-    std::vector<geometry_msgs::msg::Pose> waypoints;
-    waypoints.push_back(drop_pose);
-
-    moveit_msgs::msg::RobotTrajectory traj_down_real;
-    double fraction_down_real = move_group.computeCartesianPath(waypoints, 0.01, 0.0, traj_down_real);
-    RCLCPP_WARN(logger,
-                "REAL DOWN fraction = %.3f, points=%zu",
-                fraction_down_real,
-                traj_down_real.joint_trajectory.points.size());
-
-    if (fraction_down_real >= 0.8 && !traj_down_real.joint_trajectory.points.empty()) {
-        best_traj = traj_down_real;
-        RCLCPP_INFO(logger, "缓存真实笛卡尔下降轨迹成功");
-    } else {
-        RCLCPP_WARN(logger, "真实笛卡尔下降轨迹生成失败");
-        best_traj = moveit_msgs::msg::RobotTrajectory();
-    }
-
-    return true;
 }
 
 }  // namespace moveit_bridge_tool

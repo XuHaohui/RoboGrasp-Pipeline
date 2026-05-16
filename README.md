@@ -168,6 +168,14 @@ ros2 run piper_mujoco piper_mujoco_ctrl.py
 
 终端 C：发布目标位姿触发规划（同上节示例）。
 
+可选：在终端D中（用于rviz可视化）
+
+```bash
+source scripts/setup_env.sh
+ros2 launch piper_with_gripper_moveit demo.launch.py
+```
+
+
 注意：
 
 - `piper_mujoco` 依赖 `piper_description` 包中 `mujoco_model/piper_description.xml`；若提示找不到模型文件，请确认 `piper_description` 已正确构建并被 `source scripts/setup_env.sh`。

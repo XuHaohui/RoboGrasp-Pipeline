@@ -99,25 +99,6 @@ bool waitForAttachedObject(moveit::planning_interface::PlanningSceneInterface& p
     return false;
 }
 
-geometry_msgs::msg::Pose applyYawOffset(const geometry_msgs::msg::Pose& base_pose,
-                                        double yaw_offset)
-{
-    tf2::Quaternion q_base;
-    tf2::fromMsg(base_pose.orientation, q_base);
-
-    double roll = 0.0;
-    double pitch = 0.0;
-    double yaw = 0.0;
-    tf2::Matrix3x3(q_base).getRPY(roll, pitch, yaw);
-
-    tf2::Quaternion q_out;
-    q_out.setRPY(roll, pitch, yaw + yaw_offset);
-
-    geometry_msgs::msg::Pose out = base_pose;
-    out.orientation = tf2::toMsg(q_out);
-    return out;
-}
-
 }  // namespace
 
 namespace moveit_bridge_tool {
@@ -504,24 +485,26 @@ generatePlaceCandidates(const geometry_msgs::msg::Pose& base_pose)
 {
     std::vector<geometry_msgs::msg::Pose> candidates;
 
-    tf2::Quaternion q;
-    q.setRPY(0, M_PI / 2.0, 0);
-
     const double dx[] = {0.0, 0.02, -0.02};
     const double dy[] = {0.0, 0.02, -0.02};
+    const double yaws[] = {0, M_PI / 3.0, -M_PI / 3.0};
 
-    for (double x : dx) {
-        for (double y : dy) {
+    for (double yaw : yaws) {
+        tf2::Quaternion q;
+        q.setRPY(0, M_PI / 2.0, yaw);
 
-            geometry_msgs::msg::Pose p = base_pose;
+        for (double x : dx) {
+            for (double y : dy) {
+                geometry_msgs::msg::Pose p = base_pose;
 
-            p.position.x += x;
-            p.position.y += y;
-            p.position.z += 0;
+                p.position.x += x;
+                p.position.y += y;
+                p.position.z += 0;
 
-            p.orientation = tf2::toMsg(q);
+                p.orientation = tf2::toMsg(q);
 
-            candidates.push_back(p);
+                candidates.push_back(p);
+            }
         }
     }
 

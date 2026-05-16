@@ -152,7 +152,7 @@ bool MoveItBridgeFsm::Run(const geometry_msgs::msg::Pose& target_pose, const std
     geometry_msgs::msg::Pose place_seed = target_pose;
     place_seed.position.x = 0.45;
     place_seed.position.y = 0.05;
-    place_seed.position.z = CYLINDER_H / 2.0 + 0.2;
+    place_seed.position.z = CYLINDER_H / 2.0 + 0.15;
     ctx.place_candidates = moveit_bridge_tool::generatePlaceCandidates(place_seed);
 
     RobotState current_state = RobotState::OPEN_GRIPPER;
@@ -166,6 +166,9 @@ bool MoveItBridgeFsm::Run(const geometry_msgs::msg::Pose& target_pose, const std
 
     auto plan_and_execute_pose = [&](const geometry_msgs::msg::Pose& target) -> bool {
         move_group_.setStartStateToCurrentState();
+        move_group_.setNumPlanningAttempts(5);
+        move_group_.setPlanningTime(10.0);
+        move_group_.setGoalTolerance(0.02);
         move_group_.setPoseTarget(target);
 
         moveit::planning_interface::MoveGroupInterface::Plan plan;
@@ -396,6 +399,15 @@ bool MoveItBridgeFsm::Run(const geometry_msgs::msg::Pose& target_pose, const std
                 break;
             }
 
+            {
+                moveit::planning_interface::MoveGroupInterface::Plan gripper_plan;
+                const bool planned = moveit_bridge_tool::controlGripper(
+                    gripper_group_, logger_, false, gripper_plan);
+                if (planned) {
+                    gripper_group_.execute(gripper_plan);
+                }
+            }
+
             moveit_bridge_tool::attachObject(planning_scene_interface_, logger_, false);
             moveit_msgs::msg::CollisionObject remove_obj;
             remove_obj.id = "target_cylinder";
@@ -431,7 +443,7 @@ bool MoveItBridgeFsm::Run(const geometry_msgs::msg::Pose& target_pose, const std
                 ctx.collision_allowed = false;
                 moveit_bridge_tool::allowGripperCollision(get_scene_client_, apply_scene_client_, logger_, false);
                 if (ctx.failed_state == RobotState::PRE_GRASP) {
-                    ctx.grasp_idx++;
+                    ctx.grasp_idx = 0;
                 }
                 if (ctx.grasp_idx >= ctx.grasp_candidates.size()) {
                     current_state = RobotState::FAILED;
@@ -445,7 +457,7 @@ bool MoveItBridgeFsm::Run(const geometry_msgs::msg::Pose& target_pose, const std
                 ctx.failed_state == RobotState::PLACE ||
                 ctx.failed_state == RobotState::RELEASE) {
                 if (ctx.failed_state == RobotState::PRE_PLACE) {
-                    ctx.place_idx++;
+                    ctx.place_idx = 0;
                 }
                 if (ctx.place_idx >= ctx.place_candidates.size()) {
                     current_state = RobotState::FAILED;

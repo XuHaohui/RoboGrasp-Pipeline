@@ -511,4 +511,31 @@ generatePlaceCandidates(const geometry_msgs::msg::Pose& base_pose)
     return candidates;
 }
 
+bool isPoseIKFeasible(moveit::planning_interface::MoveGroupInterface& move_group,
+                      const rclcpp::Logger& logger,
+                      const geometry_msgs::msg::Pose& target_pose)
+{
+    const auto* jmg = move_group.getRobotModel()->getJointModelGroup(move_group.getName());
+    if (!jmg) {
+        RCLCPP_ERROR(logger, "[isPoseIKFeasible] joint model group not found");
+        return false;
+    }
+
+    moveit::core::RobotState ik_state(move_group.getRobotModel());
+
+    std::vector<double> current_joints = move_group.getCurrentJointValues();
+    ik_state.setJointGroupPositions(jmg, current_joints);
+    ik_state.update();
+
+    const double ik_timeout = 0.1;
+    bool found_ik = ik_state.setFromIK(jmg, target_pose, ik_timeout);
+
+    if (found_ik) {
+        ik_state.update();
+        found_ik = ik_state.satisfiesBounds(jmg);
+    }
+
+    return found_ik;
+}
+
 }  // namespace moveit_bridge_tool

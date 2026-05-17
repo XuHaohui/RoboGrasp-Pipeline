@@ -210,6 +210,9 @@ bool MoveItBridgeFsm::Run(const geometry_msgs::msg::Pose& target_pose, const std
             bool moved = false;
             for (; ctx.grasp_idx < ctx.grasp_candidates.size(); ++ctx.grasp_idx) {
                 const auto& candidate = ctx.grasp_candidates[ctx.grasp_idx];
+                if (!moveit_bridge_tool::isPoseIKFeasible(move_group_, logger_, candidate)) {
+                    continue;
+                }
                 if (!plan_and_execute_pose(candidate)) {
                     continue;
                 }
@@ -306,6 +309,9 @@ bool MoveItBridgeFsm::Run(const geometry_msgs::msg::Pose& target_pose, const std
             bool moved = false;
             for (; ctx.place_idx < ctx.place_candidates.size(); ++ctx.place_idx) {
                 const auto& candidate = ctx.place_candidates[ctx.place_idx];
+                if (!moveit_bridge_tool::isPoseIKFeasible(move_group_, logger_, candidate)) {
+                    continue;
+                }
                 if (!plan_and_execute_pose(candidate)) {
                     continue;
                 }

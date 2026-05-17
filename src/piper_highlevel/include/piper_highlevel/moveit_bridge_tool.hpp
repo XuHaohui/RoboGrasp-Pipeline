@@ -62,4 +62,8 @@ std::vector<geometry_msgs::msg::Pose> generateGraspCandidates(const geometry_msg
 
 std::vector<geometry_msgs::msg::Pose> generatePlaceCandidates(const geometry_msgs::msg::Pose& base_pose);
 
+bool isPoseIKFeasible(moveit::planning_interface::MoveGroupInterface& move_group,
+                      const rclcpp::Logger& logger,
+                      const geometry_msgs::msg::Pose& target_pose);
+
 }  // namespace moveit_bridge_tool

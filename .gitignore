@@ -25,6 +25,11 @@ src/piper/backup
 
 # Misc
 .thumbs
+
+# AI / IDE tooling
+.nexus/
+.vibe/
+
 analytical_solution
 oculus_reader
 oculus_reader/oculus_reader

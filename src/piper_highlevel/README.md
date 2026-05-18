@@ -1,35 +1,44 @@
-piper_highlevel — MoveIt Bridge 启动说明
-=====================================
+# piper_highlevel
 
-简介
--	此 launch 文件会同时启动 MoveIt 的 `move_group` 节点和本包的 `moveit_bridge` 节点，用于将高层控制与 MoveIt 桥接。
+Piper 机械臂高层控制包，提供基于 MoveIt2 的 Pick-and-Place 流水线。
 
-前提
--	已安装与工程对应的 ROS 2 发行版（例如 Humble）和 MoveIt2。
--	已在工作区根目录完成构建并 source 了安装环境。
+## 依赖
 
-构建（在工作区根目录执行）
+- `rclcpp`, `geometry_msgs`, `sensor_msgs`, `trajectory_msgs`, `tf2`
+- `moveit_ros_planning_interface`, `moveit_msgs`
+
+## 构建
+
 ```bash
-colcon build --packages-select piper_highlevel piper_description piper_with_gripper_moveit --symlink-install
+colcon build 
 ```
 
-运行
+## 启动
+
 ```bash
-source install/setup.bash
-ros2 launch piper_highlevel piper_moveit_bridge.launch.py
+ros2 launch piper_highlevel piper_moveit_bridge.launch.py [group_name:=arm]
 ```
 
-要点说明
--	Launch 文件路径：src/piper_highlevel/launch/piper_moveit_bridge.launch.py
--	该 launch 会读取 piper_description 包中的 URDF，以及 piper_with_gripper_moveit 包中的 SRDF 与 kinematics 配置。
--	启动的节点：
-  - move_group（package: moveit_ros_move_group）
-  - piper_moveit_bridge（package: piper_highlevel，可执行: moveit_bridge）
--	如需修改机器人配置或 group 名称，请在相应包的 config/ 文件中或在 launch/源码中调整参数。
+## 节点接口
 
-故障排查
--	若启动失败，请确认相关包已成功构建并且 `source install/setup.bash` 已执行。
--	检查终端输出的错误信息，常见问题包括路径错误、依赖未安装或可执行文件未编译。
+**节点名:** `piper_moveit_bridge`
 
-参照文件
--	[piper_moveit_bridge.launch.py](launch/piper_moveit_bridge.launch.py)
+| 类型   | 名称           | 消息类型                        |
+|--------|----------------|--------------------------------|
+| 订阅   | `/target_pose` | `geometry_msgs/msg/PoseStamped` |
+
+| 参数        | 默认值   | 说明                   |
+|------------|---------|----------------------|
+| `group_name` | `"arm"` | MoveIt planning group |
+
+## 源文件
+
+| 文件                    | 说明                                      |
+|------------------------|-------------------------------------------|
+| `moveit_bridge.cpp`    | ROS 2 节点，订阅 `/target_pose`，编排流水线    |
+| `moveit_bridge_fsm.cpp`| 有限状态机（11 状态），含失败恢复与重试           |
+| `moveit_bridge_tool.cpp`| 工具函数库：夹爪控制、笛卡尔运动、碰撞管理、IK 检查、候选点生成 |
+
+## Launch 文件
+
+`piper_moveit_bridge.launch.py` — 一键启动 `move_group` + `piper_moveit_bridge` 节点，自动加载 URDF/SRDF/kinematics 配置。

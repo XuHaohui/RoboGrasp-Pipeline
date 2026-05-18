@@ -1,248 +1,166 @@
-⚠️提示：本仓库仍在开发中，接口与启动方式可能会变化。
-如果需要知道当前进展与本版本更新内容，请参考 版本记录 / 路线图 部分   部分readme尚未更新，如果您遇到问题可以向我发送邮件 xuhaohui07@outlook.com
+# Piper Control — 基于 MoveIt2 的 Piper 机械臂抓取-放置流水线（MuJoCo 仿真）
 
-# Piper Highlevel + MuJoCo（ROS 2 Humble）
+**[ROS 2 Humble] [MoveIt2] [MuJoCo] [C++]**
 
-本工程以 **MuJoCo 仿真** 为主要运行形态（默认不涉及实机）。整体是一个基于 ROS 2 Humble 的 colcon 工作区，核心自研包为 `piper_highlevel`。
+> ⚠️ 本仓库仍在开发中，接口与启动方式可能会变化。如有问题可联系：[xuhaohui07@outlook.com](mailto:xuhaohui07@outlook.com)
 
-你还需要一套 Piper 相关的描述/MoveIt/仿真包（上游项目 `piper_ros`）。
+---
 
-- **piper_highlevel**（本仓库自研，位于 `src/piper_highlevel`）：MoveIt Bridge 节点（订阅目标位姿 → 调用 MoveIt 规划 → 发布 `/joint_states`）。
-- **piper_ros**：包含 `piper_description`、`piper_with_gripper_moveit`、`piper_no_gripper_moveit`、`piper_mujoco` 等。
-  - 如果你 `git clone` 下来 **没有** `src/piper_ros/piper_ros`，请按下文“安装/获取 piper_ros”安装。
+## 1. 项目概述
 
-## 支持内容（概览）
+本项目实现了一条**完整的 Pick-and-Place 流水线**，在 MuJoCo 物理仿真环境中控制 AgileX Piper 机械臂（含夹爪）自主完成从目标检测到物体放置的全过程。
 
-- MoveIt2 规划与 RViz Demo（有/无夹爪，来自 `piper_ros`）
-- `piper_highlevel`：`moveit_bridge` 节点 + 一键 launch（同时启动 `move_group` 与 bridge）
-- MuJoCo 可视化仿真：订阅 `/joint_states` 驱动 MuJoCo 模型（来自 `piper_ros/piper_mujoco`）
+**核心能力：**
+- 订阅目标物体位姿 (`/target_pose`)，自动执行抓取-放置全流程
+- 基于**有限状态机**的流水线控制，支持失败恢复与重试
+- 多候选点生成 + IK 快速预筛选，提升规划成功率与效率
+- 笛卡尔空间直线运动、碰撞矩阵动态管理、物体吸附/分离
+- 与 MuJoCo 仿真 + RViz 可视化集成
 
-## 环境要求
+**环境要求:** Ubuntu 22.04, ROS 2 Humble, MoveIt2, `mujoco_py`
 
-- Ubuntu 22.04（或与 Humble 匹配的 Linux）
-- ROS 2 Humble
-- MoveIt2（Humble）
-- 构建工具：`colcon`、`rosdep`
+---
 
-MuJoCo 仿真相关的额外依赖（仅在需要时安装）：
+## 2. 快速开始
 
-- Python 包：`mujoco_py`（`piper_mujoco` 当前使用该库）
-  - 说明：`mujoco_py` 对系统 OpenGL/GLFW 等依赖较敏感；如安装失败，请先按其官方说明补齐系统依赖。
-
-> 本 README 默认不覆盖“真机 CAN 控制”。如果你未来需要真机，请直接参考上游 `piper_ros` 的文档。
-
-## 安装/获取 piper_ros（当你的仓库里没有时）
-
-如果你的工作区 `src/` 下没有 `piper_description`、`piper_with_gripper_moveit`、`piper_mujoco` 等包，建议按下面方式把上游 `piper_ros` 拉到工作区里（示例以 Humble 分支为准）：
+### 2.1 克隆仓库并安装依赖
 
 ```bash
-mkdir -p src/piper_ros
-git clone https://github.com/agilexrobotics/piper_ros.git src/piper_ros
-cd src/piper_ros/piper_ros
-git checkout humble
-cd ../../../
-```
-
-然后你就会拥有 MuJoCo/MoveIt 所需的相关包与资源文件。
-
-## 环境配置
-
-为了方便地在每次使用工作区时设置环境变量，本仓库提供了一个快捷脚本：
-
-```bash
-source scripts/setup_env.sh
-```
-
-该脚本会自动：
-- 设置 `RMW_IMPLEMENTATION=rmw_cyclonedds_cpp`（使用 CycloneDDS 中间件）
-- Source 工作区的 `install/setup.bash`
-
-后续所有涉及 ROS 2 命令的操作都可以用这个一行脚本代替繁琐的手工操作。
-
-## 快速开始（构建工作区）
-
-在工作区根目录执行：
-
-```bash
-# 本工程基于 ROS 2 Humble
 source /opt/ros/humble/setup.bash
 
-# 1) 安装 ROS 依赖（会从 package.xml 解析）
+# 克隆本仓库
+git clone <your-repo-url> piper_control
+cd piper_control
+
+# 获取上游依赖 piper_ros (如尚未存在)
+mkdir -p src/piper_ros
+git clone https://github.com/agilexrobotics/piper_ros.git src/piper_ros
+cd src/piper_ros/piper_ros && git checkout humble && cd ../../../
+
+# 安装系统依赖
 rosdep update
 rosdep install --from-paths src --ignore-src -r -y
 
-# 2) 安装 Python 依赖（rosdep 不会处理 pip 依赖）
-# - 如果你安装了 piper_ros：按其 requirements 安装
-if [ -f src/piper_ros/piper_ros/requirements.txt ]; then
-  pip3 install -r src/piper_ros/requirements.txt
-fi
-
-# - MuJoCo（piper_mujoco 目前使用 mujoco_py）
+# 安装 Python 依赖 (MuJoCo 与 piper_ros 的额外依赖)
 pip3 install mujoco_py
+[ -f src/piper_ros/piper_ros/requirements.txt ] && \
+    pip3 install -r src/piper_ros/piper_ros/requirements.txt
 
-# 3) 构建
+# 构建
 colcon build --symlink-install
 
-# 4) 生效工作区环境
+# 加载环境
 source scripts/setup_env.sh
 ```
 
-只构建关键包（开发 `piper_highlevel` 时更快）：
+仅构建核心包（快速迭代）：
 
 ```bash
-colcon build --symlink-install \
-  --packages-select piper_highlevel piper_description piper_with_gripper_moveit
+colcon build -
 ```
 
-## 运行方式
+### 2.2 环境配置
 
-### 1）MoveIt RViz Demo（推荐先验证环境）
+`scripts/setup_env.sh` 自动完成：
+- 设置 `RMW_IMPLEMENTATION=rmw_cyclonedds_cpp`（CycloneDDS 中间件）
+- Source `install/setup.bash`
 
-有夹爪：
+**推荐：** 加入 `~/.bashrc` 避免小数点解析问题：
+```bash
+export LC_NUMERIC=en_US.UTF-8
+```
+
+---
+
+## 3. 运行指南
+
+### 3.1 验证环境 — MoveIt RViz Demo
 
 ```bash
 source scripts/setup_env.sh
 ros2 launch piper_with_gripper_moveit demo.launch.py
 ```
 
-### 2）启动 MoveIt Bridge（同时启动 move_group + bridge）
+### 3.2 启动 Pick-and-Place 流水线
 
-该方式会从 `piper_description` 与 `piper_with_gripper_moveit` 读取 URDF/SRDF/kinematics 等配置，并启动：
-
-- `moveit_ros_move_group/move_group`
-- `piper_highlevel/moveit_bridge`（节点名：`piper_moveit_bridge`）
-
-启动：
+**终端 A：** MoveIt Bridge（move_group + FSM 节点）
 
 ```bash
 source scripts/setup_env.sh
 ros2 launch piper_highlevel piper_moveit_bridge.launch.py
 ```
 
-发布一个目标位姿（示例）：
-
-```bash
-source scripts/setup_env.sh
-ros2 topic pub /target_pose geometry_msgs/msg/PoseStamped "{\
-  header: { frame_id: 'world' },\
-  pose: {\
-    position: { x: 0.35, y: 0.05, z: 0.15 },\
-    orientation: { x: 0.0, y: 0.0, z: 0.0, w: 1.0 }\
-  }\
-}" -1
-```
-
-说明：
-
-- `piper_moveit_bridge.launch.py` 默认会发布一个 `world -> base_link` 的静态 TF；如你在自己的 TF 树里已提供对应变换，可按需移除。
-- 若你的 planning group 不是 `arm`，可这样指定：
-
-```bash
-ros2 launch piper_highlevel piper_moveit_bridge.launch.py group_name:=<你的group>
-```
-
-更详细的 bridge 文档：
-
-- `src/piper_highlevel/README.md`
-- `src/piper_highlevel/README_MOVEIT_BRIDGE.md`
-
-### 3）MuJoCo 仿真（无实机）
-
-MuJoCo 节点会订阅 `/joint_states` 并驱动 MuJoCo 模型渲染；你可以用 MoveIt Bridge 规划后发布的 `/joint_states` 来驱动仿真。
-
-终端 A：启动 MoveIt（move_group + bridge）：
-
-```bash
-source scripts/setup_env.sh
-ros2 launch piper_highlevel piper_moveit_bridge.launch.py
-```
-
-终端 B：启动 MuJoCo 可视化（有夹爪）：
+**终端 B：** MuJoCo 可视化
 
 ```bash
 source scripts/setup_env.sh
 ros2 run piper_mujoco piper_mujoco_ctrl.py
 ```
 
-终端 C：发布目标位姿触发规划（同上节示例）。
+**终端 C：** 发布目标物体位姿（触发全流程）
 
-可选：在终端D中（用于rviz可视化）
+```bash
+source scripts/setup_env.sh
+ros2 topic pub /target_pose geometry_msgs/msg/PoseStamped "{
+  header: { frame_id: 'world' },
+  pose: {
+    position: { x: 0.35, y: 0.05, z: 0.02 },
+    orientation: { x: 0.0, y: 0.0, z: 0.0, w: 1.0 }
+  }
+}" -1
+```
+
+**终端 D：** 启动rviz观查规划
+
+```bash
+source scripts/setup_env.sh
+ros2 launch piper_with_gripper_moveit demo.launch.py 
+```
+
+
+流水线将自动执行：张开夹爪 → 移动到抓取预备位 → 笛卡尔接近 → 闭合抓取 → 抬升 → 移动到放置预备位 → 笛卡尔放置 → 释放 → 返回 Home。
+
+### 3.3 自定义 Planning Group（后续开放）
+
+```bash
+ros2 launch piper_highlevel piper_moveit_bridge.launch.py group_name:=<你的group名>
+```
+
+### 3.4 RViz 可视化（可选终端 D）
 
 ```bash
 source scripts/setup_env.sh
 ros2 launch piper_with_gripper_moveit demo.launch.py
 ```
 
+## 4. 版本历史
 
-注意：
+### v0.6 (当前)
 
-- `piper_mujoco` 依赖 `piper_description` 包中 `mujoco_model/piper_description.xml`；若提示找不到模型文件，请确认 `piper_description` 已正确构建并被 `source scripts/setup_env.sh`。
-- MuJoCo Viewer 需要图形界面（X11/Wayland + OpenGL）。在无桌面环境下运行需要额外配置虚拟显示。
+- **IK 快速预筛选**：PRE_GRASP 和 PRE_PLACE 阶段遍历候选点时，先用 KDL 数值 IK (0.1s 超时) 做快速可达性检查，不可达候选直接跳过，避免进入 OMPL 规划引擎，大幅缩短不可达候选的失败耗时
+- **放置后后撤**：RELEASE 阶段在放置物体后执行后撤动作，防止直接回 Home 导致与桌面碰撞
+- **Home 后闭合夹爪**：RETURN_HOME 完成后闭合夹爪，确保流程可重复执行
 
-## 目录结构
+### v0.5 — 状态机重构
 
-- `src/piper_highlevel/`：高层控制与 MoveIt Bridge（本仓库自研包）
-- `src/piper_ros/piper_ros/`：Piper 描述/MoveIt/MuJoCo 等（上游依赖；若你的 clone 没有，需要按上文安装）
-- `install/`、`build/`、`log/`：colcon 生成目录
+- **状态机流水线**：引入 11 状态 FSM（OPEN_GRIPPER → PRE_GRASP → APPROACH → GRASP → LIFT → PRE_PLACE → PLACE → RELEASE → RETURN_HOME → RECOVER），彻底修改为半离线规划模式
+- **MoveIt 工具函数库**：夹爪控制、笛卡尔运动、碰撞管理、物体吸附/分离、多候选点生成（10 抓取候选 + 27 放置候选）
+- **失败恢复机制**：最多 3 次自动重试，根据失败阶段智能回退
+- 改用 **CycloneDDS** 中间件，提升通信稳定性
 
-## 常见问题（FAQ）
+### v0.4 — 抓取稳定性
 
-1）`demo.launch.py` 报“参数需要 double，却给了 string”
+- 大幅提高 PRE_GRASP → APPROACH 阶段成功率
+- 删除 APPROACH 的笛卡尔接近，改用普通规划接近
+- PLACE 阶段改为现场计算笛卡尔接近
+- 引入 `cartesianMove` 权重控制，阻止夹爪完全关闭问题
 
-通常与本地语言区域（小数点）有关，按 `piper_moveit` 文档建议设置：
+---
 
-```bash
-echo "export LC_NUMERIC=en_US.UTF-8" >> ~/.bashrc
-source ~/.bashrc
-```
+## 5. 许可证
 
-2）MoveIt 规划失败 / IK 失败
+本工作区组合多个 ROS 包和上游依赖，各包许可证以各自 `package.xml` 及上游仓库 LICENSE 文件为准。
 
-- 确认 `move_group` 已启动且加载了正确的 URDF/SRDF。
-- 确认 `frame_id` 与 MoveIt 使用的 planning frame 一致。
-- 若 kinematics 超时过低，可在 MoveIt 配置的 `kinematics.yaml` 里增大 `kinematics_solver_timeout`。
+---
 
-3）构建后找不到 launch / urdf 等资源
-
-- 确认执行了 `source install/setup.bash`。
-- 若你在 `piper_ros` 内修改了资源文件，推荐使用 `colcon build --symlink-install` 以便开发迭代。
-
-## 版本记录 / 路线图
-
-## 上一版本（已完成）
-这次更新添加了一个完整的抓取和放置流水线，让机器人能自动完成从抓取物体到放到指定位置的全过程。主要新增内容包括：
-
-状态机流水线：实现了完整的pick-and-place流程，包含以下状态：
-
-OPEN_GRIPPER：打开夹爪
-PRE_GRASP：移动到抓取预备位置
-APPROACH：接近物体
-GRASP：闭合夹爪抓取
-LIFT：抬升物体
-PRE_PLACE：移动到放置预备位置
-PLACE：放下物体
-RELEASE：释放夹爪
-RETURN_HOME：返回初始位置
-RECOVER：失败恢复机制
-MoveIt工具函数库（新增moveit_bridge_tool.cpp）：
-
-夹爪控制：开合夹爪、根据物体尺寸调整夹爪宽度
-路径规划：笛卡尔运动、直线移动
-碰撞管理：允许/禁止夹爪与物体碰撞
-物体管理：添加圆柱体到场景、附加/分离物体到夹爪
-候选点生成：自动生成多个抓取和放置角度候选点
-过滤器：选择最佳抓取/放置角度，提高成功率
-稳定性检测：等待运动稳定、关节变化检测
-这些功能让机器人能够更智能地处理复杂的抓取任务，自动尝试不同角度，提高整体成功率。
-
-改用：CycloneDDS
-添加放置后后撤
-
-添加IK快速预筛选：在PRE_GRASP和PRE_PLACE阶段遍历候选点时，先用KDL数值IK（0.1s超时）做快速可达性检查，不可达候选直接跳过，避免进入OMPL规划引擎产生"Unable to sample any valid states for goal tree"错误，大幅缩短不可达候选的失败耗时
-
-## 下一版本（计划）
-对于某些位置下笛卡尔接近不可达的问题优化，并且更新readme
-
-## 许可证
-
-本工作区可能会组合多个 ROS 包/上游依赖，许可证以各包 `package.xml` 与上游仓库自带 LICENSE 为准；例如 `src/piper_ros/piper_ros/LICENSE`。
+*联系: [xuhaohui07@outlook.com](mailto:xuhaohui07@outlook.com)*

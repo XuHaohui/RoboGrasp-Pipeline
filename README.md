@@ -2,7 +2,7 @@
 
 **[ROS 2 Humble] [MoveIt2] [MuJoCo] [C++]**
 
-> ⚠️ 本仓库仍在开发中，接口与启动方式可能会变化。如有问题可联系：[xuhaohui07@outlook.com](mailto:xuhaohui07@outlook.com)
+> ⚠️ 本仓库已经具备完整流程，但仍然处于优化状态，接口与启动方式可能会变化。如有问题可联系：[xuhaohui07@outlook.com](mailto:xuhaohui07@outlook.com)
 
 ---
 

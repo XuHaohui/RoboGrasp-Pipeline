@@ -2,7 +2,7 @@
 
 **[ROS 2 Humble] [MoveIt2] [MuJoCo] [C++]**
 
-> ⚠️ 本仓库仍在开发中，接口与启动方式可能会变化。如有问题可联系：[xuhaohui07@outlook.com](mailto:xuhaohui07@outlook.com)
+> ⚠️ 本仓库已经具备完整流程，但仍然处于优化状态，接口与启动方式可能会变化。如有问题可联系：[xuhaohui07@outlook.com](mailto:xuhaohui07@outlook.com)
 
 ---
 
@@ -29,13 +29,12 @@
 source /opt/ros/humble/setup.bash
 
 # 克隆本仓库
-git clone <your-repo-url> piper_control
-cd piper_control
+git clone <your-repo-url> 
 
 # 获取上游依赖 piper_ros (如尚未存在)
-mkdir -p src/piper_ros
-git clone https://github.com/agilexrobotics/piper_ros.git src/piper_ros
-cd src/piper_ros/piper_ros && git checkout humble && cd ../../../
+cd src
+git clone https://github.com/agilexrobotics/piper_ros.git piper_ros
+cd piper_ros && git checkout humble 
 
 # 安装系统依赖
 rosdep update
@@ -104,7 +103,7 @@ source scripts/setup_env.sh
 ros2 topic pub /target_pose geometry_msgs/msg/PoseStamped "{
   header: { frame_id: 'world' },
   pose: {
-    position: { x: 0.35, y: 0.05, z: 0.02 },
+    position: { x: 0.35, y: 0.05, z: 0.2 },
     orientation: { x: 0.0, y: 0.0, z: 0.0, w: 1.0 }
   }
 }" -1

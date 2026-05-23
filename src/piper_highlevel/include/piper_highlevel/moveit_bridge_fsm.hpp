@@ -12,6 +12,8 @@
 #include <moveit_msgs/srv/get_planning_scene.hpp>
 #include <moveit_msgs/srv/apply_planning_scene.hpp>
 
+#include "piper_highlevel/moveit_bridge_tool.hpp"
+
 namespace piper_highlevel {
 
 class MoveItBridgeFsm {
@@ -39,7 +41,7 @@ public:
                     const std::string& group_name,
                     const rclcpp::Logger& logger);
 
-    bool Run(const geometry_msgs::msg::Pose& target_pose, const std::string& frame_id);
+    bool Run(const geometry_msgs::msg::Pose& target_pose, const std::string& frame_id, const ObjectGeometry& geo);
 
 private:
     moveit::planning_interface::MoveGroupInterface& move_group_;

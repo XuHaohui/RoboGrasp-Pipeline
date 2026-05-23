@@ -123,7 +123,7 @@ MoveItBridgeFsm::MoveItBridgeFsm(
 
 }
 
-bool MoveItBridgeFsm::Run(const geometry_msgs::msg::Pose& target_pose, const std::string& frame_id)
+bool MoveItBridgeFsm::Run(const geometry_msgs::msg::Pose& target_pose, const std::string& frame_id, const ObjectGeometry& geo)
 {
     (void)frame_id;
 
@@ -138,21 +138,23 @@ bool MoveItBridgeFsm::Run(const geometry_msgs::msg::Pose& target_pose, const std
         int retry_count = 0;
         RobotState failed_state = RobotState::IDLE;
         bool collision_allowed = false;
+        ObjectGeometry object_geometry;
     };
 
     PipelineContext ctx;
     ctx.target_pose = target_pose;
     ctx.frame_id = frame_id;
+    ctx.object_geometry = geo;
     ctx.home_joints = move_group_.getCurrentJointValues();
 
     geometry_msgs::msg::Pose grasp_seed = target_pose;
-    grasp_seed.position.z += (CYLINDER_H + 0.05);
+    grasp_seed.position.z += (ctx.object_geometry.bbox[2] + 0.05);
     ctx.grasp_candidates = moveit_bridge_tool::generateGraspCandidates(grasp_seed);
 
     geometry_msgs::msg::Pose place_seed = target_pose;
     place_seed.position.x = 0.45;
     place_seed.position.y = 0.05;
-    place_seed.position.z = CYLINDER_H / 2.0 + 0.15;
+    place_seed.position.z = ctx.object_geometry.bbox[2] / 2.0 + 0.15;
     ctx.place_candidates = moveit_bridge_tool::generatePlaceCandidates(place_seed);
 
     RobotState current_state = RobotState::OPEN_GRIPPER;
@@ -235,11 +237,11 @@ bool MoveItBridgeFsm::Run(const geometry_msgs::msg::Pose& target_pose, const std
             RCLCPP_INFO(logger_, "State: APPROACH");
             if (!ctx.collision_allowed) {
                 ctx.collision_allowed = moveit_bridge_tool::allowGripperCollision(
-                    get_scene_client_, apply_scene_client_, logger_, true);
+                    get_scene_client_, apply_scene_client_, logger_, true, ctx.object_geometry.object_id);
             }
 
             geometry_msgs::msg::Pose p = move_group_.getCurrentPose().pose;
-            p.position.z = target_pose.position.z + (CYLINDER_H / 2.0);
+            p.position.z = target_pose.position.z + (ctx.object_geometry.bbox[2] / 2.0);
 
             move_group_.setStartStateToCurrentState();
             moveit_msgs::msg::RobotTrajectory traj;
@@ -263,7 +265,7 @@ bool MoveItBridgeFsm::Run(const geometry_msgs::msg::Pose& target_pose, const std
             RCLCPP_INFO(logger_, "State: GRASP");
             auto before = gripper_group_.getCurrentJointValues();
             moveit::planning_interface::MoveGroupInterface::Plan plan;
-            const bool planned = moveit_bridge_tool::closeGripperToObject(gripper_group_, CYLINDER_R * 2, plan);
+            const bool planned = moveit_bridge_tool::closeGripperToObject(gripper_group_, ctx.object_geometry.gripper_width, plan);
             if (!planned) {
                 fail("gripper close plan failed");
                 break;
@@ -272,8 +274,8 @@ bool MoveItBridgeFsm::Run(const geometry_msgs::msg::Pose& target_pose, const std
             waitUntilStable(move_group_, std::chrono::milliseconds(1500), std::chrono::milliseconds(150));
             auto after = gripper_group_.getCurrentJointValues();
             const bool updated = jointsUpdated(before, after, kJointDeltaTol);
-            const bool attach_ok = moveit_bridge_tool::attachObject(planning_scene_interface_, logger_, true);
-            const bool attached = waitForAttachedObject(planning_scene_interface_, "target_cylinder", true,
+            const bool attach_ok = moveit_bridge_tool::attachObject(planning_scene_interface_, logger_, true, ctx.object_geometry.object_id);
+            const bool attached = waitForAttachedObject(planning_scene_interface_, ctx.object_geometry.object_id, true,
                                                        std::chrono::milliseconds(1500));
             if (updated && attach_ok && attached) {
                 current_state = RobotState::LIFT;
@@ -356,7 +358,7 @@ bool MoveItBridgeFsm::Run(const geometry_msgs::msg::Pose& target_pose, const std
             const bool released = moveit_bridge_tool::releaseAtPlaceAndLift(
                 move_group_, gripper_group_, planning_scene_interface_,
                 get_scene_client_, apply_scene_client_, logger_,
-                ctx.frame_id, kJointDeltaTol, kPosePosTol);
+                ctx.frame_id, kJointDeltaTol, kPosePosTol, ctx.object_geometry);
             ctx.collision_allowed = false;
             if (released) {
                 current_state = RobotState::RETURN_HOME;
@@ -414,12 +416,12 @@ bool MoveItBridgeFsm::Run(const geometry_msgs::msg::Pose& target_pose, const std
                 }
             }
 
-            moveit_bridge_tool::attachObject(planning_scene_interface_, logger_, false);
+            moveit_bridge_tool::attachObject(planning_scene_interface_, logger_, false, ctx.object_geometry.object_id);
             moveit_msgs::msg::CollisionObject remove_obj;
-            remove_obj.id = "target_cylinder";
+            remove_obj.id = ctx.object_geometry.object_id;
             remove_obj.operation = moveit_msgs::msg::CollisionObject::REMOVE;
             planning_scene_interface_.applyCollisionObject(remove_obj);
-            moveit_bridge_tool::allowGripperCollision(get_scene_client_, apply_scene_client_, logger_, false);
+            moveit_bridge_tool::allowGripperCollision(get_scene_client_, apply_scene_client_, logger_, false, ctx.object_geometry.object_id);
 
             current_state = RobotState::IDLE;
             break;
@@ -447,7 +449,7 @@ bool MoveItBridgeFsm::Run(const geometry_msgs::msg::Pose& target_pose, const std
                 ctx.failed_state == RobotState::GRASP ||
                 ctx.failed_state == RobotState::LIFT) {
                 ctx.collision_allowed = false;
-                moveit_bridge_tool::allowGripperCollision(get_scene_client_, apply_scene_client_, logger_, false);
+                moveit_bridge_tool::allowGripperCollision(get_scene_client_, apply_scene_client_, logger_, false, ctx.object_geometry.object_id);
                 if (ctx.failed_state == RobotState::PRE_GRASP) {
                     ctx.grasp_idx = 0;
                 }

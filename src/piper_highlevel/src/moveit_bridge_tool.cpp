@@ -177,7 +177,8 @@ bool allowGripperCollision(
     rclcpp::Client<moveit_msgs::srv::GetPlanningScene>::SharedPtr get_scene_client,
     rclcpp::Client<moveit_msgs::srv::ApplyPlanningScene>::SharedPtr apply_scene_client,
     const rclcpp::Logger& logger,
-    bool allow)
+    bool allow,
+    const std::string& object_id)
 {
     if (!get_scene_client->wait_for_service(std::chrono::seconds(2))) {
         RCLCPP_ERROR(logger, "GetPlanningScene service not available");
@@ -209,8 +210,6 @@ bool allowGripperCollision(
         "link7",
         "link8"
     };
-
-    std::string object_id = "target_cylinder";
 
     auto ensureEntry = [&](const std::string& name) {
         auto it = std::find(acm.entry_names.begin(), acm.entry_names.end(), name);
@@ -295,9 +294,9 @@ bool closeGripperToObject(moveit::planning_interface::MoveGroupInterface& grippe
 
 bool attachObject(moveit::planning_interface::PlanningSceneInterface& planning_scene_interface,
                   const rclcpp::Logger& logger,
-                  bool allow_collision)
+                  bool allow_collision,
+                  const std::string& object_id)
 {
-    const std::string object_id = "target_cylinder";
 
     if (allow_collision) {
         moveit_msgs::msg::AttachedCollisionObject attached_object;
@@ -337,32 +336,54 @@ bool attachObject(moveit::planning_interface::PlanningSceneInterface& planning_s
     }
 }
 
-void addCylinder(moveit::planning_interface::PlanningSceneInterface& planning_scene_interface,
-                 const rclcpp::Logger& logger,
-                 const geometry_msgs::msg::Pose& bottom_pose,
-                 const std::string& frame_id)
+void addObject(moveit::planning_interface::PlanningSceneInterface& planning_scene_interface,
+               const rclcpp::Logger& logger,
+               const geometry_msgs::msg::Pose& bottom_pose,
+               const std::string& frame_id,
+               const ObjectGeometry& geo)
 {
+    (void)frame_id;
     moveit_msgs::msg::CollisionObject collision_object;
     collision_object.header.frame_id = "world";
-    collision_object.id = "target_cylinder";
+    collision_object.id = geo.object_id;
 
     shape_msgs::msg::SolidPrimitive primitive;
-    primitive.type = primitive.CYLINDER;
-    primitive.dimensions.resize(2);
-    primitive.dimensions[primitive.CYLINDER_HEIGHT] = CYLINDER_H;
-    primitive.dimensions[primitive.CYLINDER_RADIUS] = CYLINDER_R;
+    geometry_msgs::msg::Pose obj_pose = bottom_pose;
 
-    geometry_msgs::msg::Pose cylinder_pose = bottom_pose;
-    cylinder_pose.position.z += CYLINDER_H / 2.0;
+    switch (geo.shape) {
+    case ObjectShape::CYLINDER:
+        primitive.type = primitive.CYLINDER;
+        primitive.dimensions.resize(2);
+        primitive.dimensions[primitive.CYLINDER_HEIGHT] = geo.bbox[2];
+        primitive.dimensions[primitive.CYLINDER_RADIUS] = std::min(geo.bbox[0], geo.bbox[1]) / 2.0f;
+        obj_pose.position.z += geo.bbox[2] / 2.0;
+        break;
+    case ObjectShape::BOX:
+        primitive.type = primitive.BOX;
+        primitive.dimensions.resize(3);
+        primitive.dimensions[primitive.BOX_X] = geo.bbox[0];
+        primitive.dimensions[primitive.BOX_Y] = geo.bbox[1];
+        primitive.dimensions[primitive.BOX_Z] = geo.bbox[2];
+        obj_pose.position.z += geo.bbox[2] / 2.0;
+        break;
+    case ObjectShape::SPHERE: {
+        float r = std::min({geo.bbox[0], geo.bbox[1], geo.bbox[2]}) / 2.0f;
+        primitive.type = primitive.SPHERE;
+        primitive.dimensions.resize(1);
+        primitive.dimensions[primitive.SPHERE_RADIUS] = r;
+        obj_pose.position.z += r;
+        break;
+    }
+    }
 
     collision_object.primitives.push_back(primitive);
-    collision_object.primitive_poses.push_back(cylinder_pose);
+    collision_object.primitive_poses.push_back(obj_pose);
     collision_object.operation = collision_object.ADD;
 
     std::vector<moveit_msgs::msg::CollisionObject> collision_objects;
     collision_objects.push_back(collision_object);
 
-    RCLCPP_INFO(logger, "Adding cylinder to the scene");
+    RCLCPP_INFO(logger, "Adding object [%s] to the scene", geo.object_id.c_str());
     planning_scene_interface.addCollisionObjects(collision_objects);
 }
 
@@ -375,7 +396,8 @@ bool releaseAtPlaceAndLift(
     const rclcpp::Logger& logger,
     const std::string& frame_id,
     double joint_delta_tol,
-    double pose_pos_tol)
+    double pose_pos_tol,
+    const ObjectGeometry& geo)
 {
     auto before = gripper_group.getCurrentJointValues();
     moveit::planning_interface::MoveGroupInterface::Plan plan;
@@ -397,15 +419,15 @@ bool releaseAtPlaceAndLift(
     place_bottom.position = tcp_pose.position;
     place_bottom.position.x += 0.12 ;
     place_bottom.position.y -= 0.02 ;
-    place_bottom.position.z -= CYLINDER_H / 2.0;
+    place_bottom.position.z -= geo.bbox[2] / 2.0;
     place_bottom.orientation.x = 0;
     place_bottom.orientation.y = 0;
     place_bottom.orientation.z = 0;
     place_bottom.orientation.w = 1;
-    addCylinder(planning_scene_interface, logger, place_bottom, frame_id);
+    addObject(planning_scene_interface, logger, place_bottom, frame_id, geo);
 
-    const bool detach_ok = attachObject(planning_scene_interface, logger, false);
-    const bool detached = waitForAttachedObject(planning_scene_interface, "target_cylinder", false,
+    const bool detach_ok = attachObject(planning_scene_interface, logger, false, geo.object_id);
+    const bool detached = waitForAttachedObject(planning_scene_interface, geo.object_id, false,
                                                 std::chrono::milliseconds(1500));
     if (!detach_ok || !detached) {
         return false;
@@ -428,7 +450,7 @@ bool releaseAtPlaceAndLift(
         return false;
     }
 
-    allowGripperCollision(get_scene_client, apply_scene_client, logger, false);
+    allowGripperCollision(get_scene_client, apply_scene_client, logger, false, geo.object_id);
 
     geometry_msgs::msg::Pose retreat = move_group.getCurrentPose().pose;
     retreat.position.z -= 0.05;  

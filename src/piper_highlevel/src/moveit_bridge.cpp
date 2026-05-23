@@ -1,9 +1,11 @@
 #include <memory>
 #include <chrono>
 #include <functional>
+#include <algorithm>
 
 #include "rclcpp/rclcpp.hpp"
-#include "geometry_msgs/msg/pose_stamped.hpp"
+#include "robograsp_interfaces/msg/object_info.hpp"
+#include "geometry_msgs/msg/pose.hpp"
 #include <moveit/move_group_interface/move_group_interface.h>
 #include <moveit_msgs/msg/collision_object.hpp>
 
@@ -43,8 +45,8 @@ MoveItBridge::MoveItBridge()
     auto sub_options = rclcpp::SubscriptionOptions();
     sub_options.callback_group = cb_group_;
 
-    sub_ = this->create_subscription<geometry_msgs::msg::PoseStamped>(
-        "/target_pose", 10, std::bind(&MoveItBridge::pose_cb, this, _1), sub_options);
+    sub_ = this->create_subscription<robograsp_interfaces::msg::ObjectInfo>(
+        "/target_pose", 10, std::bind(&MoveItBridge::object_info_cb, this, _1), sub_options);
     
     get_scene_client_ = this->create_client<moveit_msgs::srv::GetPlanningScene>("/get_planning_scene");
     apply_scene_client_ = this->create_client<moveit_msgs::srv::ApplyPlanningScene>("/apply_planning_scene");
@@ -71,7 +73,7 @@ void MoveItBridge::init_move_group()
     }
 }
 
-void MoveItBridge::pose_cb(const geometry_msgs::msg::PoseStamped::SharedPtr msg)
+void MoveItBridge::object_info_cb(const robograsp_interfaces::msg::ObjectInfo::SharedPtr msg)
 {
     if (!move_group_) {
         RCLCPP_WARN(this->get_logger(), "MoveGroup not yet initialized, ignoring request.");
@@ -86,25 +88,61 @@ void MoveItBridge::pose_cb(const geometry_msgs::msg::PoseStamped::SharedPtr msg)
     move_group_->clearPoseTargets();
     move_group_->clearPathConstraints();
 
-    moveit_bridge_tool::attachObject(planning_scene_interface_, this->get_logger(), false);
+    if (!last_object_id_.empty()) {
+        moveit_bridge_tool::attachObject(planning_scene_interface_, this->get_logger(), false, last_object_id_);
+    }
         
-    moveit_msgs::msg::CollisionObject remove_obj;
-    remove_obj.id = "target_cylinder";
-    remove_obj.operation = moveit_msgs::msg::CollisionObject::REMOVE;
-    planning_scene_interface_.applyCollisionObject(remove_obj);
-    moveit_bridge_tool::allowGripperCollision(get_scene_client_, apply_scene_client_, this->get_logger(), false);
+    if (!last_object_id_.empty()) {
+        moveit_msgs::msg::CollisionObject remove_obj;
+        remove_obj.id = last_object_id_;
+        remove_obj.operation = moveit_msgs::msg::CollisionObject::REMOVE;
+        planning_scene_interface_.applyCollisionObject(remove_obj);
+        moveit_bridge_tool::allowGripperCollision(get_scene_client_, apply_scene_client_, this->get_logger(), false, last_object_id_);
+    }
 
-    waitForCollisionObject(planning_scene_interface_, "target_cylinder", false, std::chrono::milliseconds(1500));
+    if (!last_object_id_.empty()) {
+        waitForCollisionObject(planning_scene_interface_, last_object_id_, false, std::chrono::milliseconds(1500));
+    }
 
     busy_ = true;
 
-    moveit_bridge_tool::addCylinder(planning_scene_interface_, this->get_logger(), msg->pose, msg->header.frame_id);
-    GraspSequence(msg->pose, msg->header.frame_id);
+    ObjectGeometry geo;
+    if (msg->object_class == "box" || msg->object_class == "cube") {
+        geo.shape = ObjectShape::BOX;
+    } else if (msg->object_class == "sphere") {
+        geo.shape = ObjectShape::SPHERE;
+    } else {
+        geo.shape = ObjectShape::CYLINDER;
+    }
+
+    geo.bbox[0] = msg->bbox_size[0];
+    geo.bbox[1] = msg->bbox_size[1];
+    geo.bbox[2] = msg->bbox_size[2];
+    geo.gripper_width = std::min(geo.bbox[0], geo.bbox[1]) - 0.01f;
+
+    switch (geo.shape) {
+        case ObjectShape::CYLINDER: geo.object_id = "target_cylinder"; break;
+        case ObjectShape::BOX:      geo.object_id = "target_box";      break;
+        case ObjectShape::SPHERE:   geo.object_id = "target_sphere";   break;
+    }
+
+    geometry_msgs::msg::Pose target_pose;
+    target_pose.position.x = msg->bottom_center.x;
+    target_pose.position.y = msg->bottom_center.y;
+    target_pose.position.z = msg->bottom_center.z;
+    target_pose.orientation.x = 0.0;
+    target_pose.orientation.y = 0.0;
+    target_pose.orientation.z = 0.0;
+    target_pose.orientation.w = 1.0;
+
+    moveit_bridge_tool::addObject(planning_scene_interface_, this->get_logger(), target_pose, msg->header.frame_id, geo);
+    last_object_id_ = geo.object_id;
+    GraspSequence(target_pose, msg->header.frame_id, geo);
 
     busy_ = false;
 }
 
-void MoveItBridge::GraspSequence(const geometry_msgs::msg::Pose& target_pose, const std::string& frame_id)
+void MoveItBridge::GraspSequence(const geometry_msgs::msg::Pose& target_pose, const std::string& frame_id, const ObjectGeometry& geo)
 {
     move_group_->setPoseReferenceFrame(frame_id);
     move_group_->setMaxVelocityScalingFactor(0.05);
@@ -117,7 +155,7 @@ void MoveItBridge::GraspSequence(const geometry_msgs::msg::Pose& target_pose, co
                                          apply_scene_client_,
                                          group_name_,
                                          this->get_logger());
-    const bool ok = fsm.Run(target_pose, frame_id);
+    const bool ok = fsm.Run(target_pose, frame_id, geo);
     if (!ok) {
         RCLCPP_ERROR(this->get_logger(), "FSM pipeline failed");
     }

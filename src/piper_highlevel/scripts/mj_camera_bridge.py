@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 
 import os
+os.environ['__GL_THREADED_OPTIMIZATIONS'] = '0'
+
 import sys
 import tempfile
 
@@ -17,6 +19,7 @@ try:
 except ImportError:
     HAS_CV = False
 
+import glfw
 import mujoco_py
 from mujoco_py import MjSim, MjViewer, MjRenderContextOffscreen
 
@@ -66,6 +69,15 @@ class MuJoCoCameraBridge(Node):
 
         self._sim = MjSim(self._model)
         self._viewer = MjViewer(self._sim)
+        self._viewer.render()
+        glfw.swap_interval(1)
+
+        # Set initial camera pose on viewer
+        self._viewer.cam.lookat[:] = self._cam_lookat
+        self._viewer.cam.distance = self._cam_distance
+        self._viewer.cam.elevation = self._cam_elevation
+        self._viewer.cam.azimuth = self._cam_azimuth
+        self._sim.model.vis.global_.fovy = self._cam_fovy
 
         # ─── KEY FIX: Explicit offscreen context isolated from viewer ───
         # device_id=-1 → OSMesa (software rasterizer, no GPU context conflict with MjViewer)
@@ -162,6 +174,7 @@ class MuJoCoCameraBridge(Node):
 
         self._sim.step()
 
+        glfw.make_context_current(self._viewer.window)
         self._viewer.render()
 
         if self._step_count % 10 == 0:
@@ -175,30 +188,31 @@ class MuJoCoCameraBridge(Node):
         width, height = 640, 480
         stamp = self.get_clock().now().to_msg()
 
-        # ─── FIX 1: Write camera parameters to sim.data.cam (the authority) ───
-        # In mujoco_py, sim.data.cam is the "free camera" backing store.
-        # ctx.cam is a SEPARATE MjvCamera struct that may be stale or get
-        # overwritten during render().  Always sync BOTH for safety.
-        free_cam = self._sim.data.cam
-        free_cam.lookat[:] = self._cam_lookat
-        free_cam.distance = self._cam_distance
-        free_cam.elevation = self._cam_elevation
-        free_cam.azimuth = self._cam_azimuth
-
+        # Configure offscreen camera from stored parameters.
+        # sim.data does not expose an MjvCamera in this mujoco_py version —
+        # configure ctx.cam directly.
         ctx = self._offscreen
-        ctx.cam.lookat[:] = free_cam.lookat
-        ctx.cam.distance = free_cam.distance
-        ctx.cam.elevation = free_cam.elevation
-        ctx.cam.azimuth = free_cam.azimuth
+        ctx.cam.lookat[:] = self._cam_lookat
+        ctx.cam.distance = self._cam_distance
+        ctx.cam.elevation = self._cam_elevation
+        ctx.cam.azimuth = self._cam_azimuth
 
-        # ─── FIX 2: Configure fovy ───
+        # Configure fovy ───
         saved_fovy = self._sim.model.vis.global_.fovy
         self._sim.model.vis.global_.fovy = self._cam_fovy
 
-        # ─── FIX 3: Render + read pixels via the offscreen context directly ───
+        # Render + read pixels via the offscreen context directly.
         # Using ctx.render() + ctx.read_pixels() avoids the lazy-init path in
         # sim.render() which can create a second GLFW context on device 0.
+        #
+        # CRITICAL: The EGL offscreen context's FBOs are created in the EGL
+        # context during __init__, but viewer.render() makes the GLFW context
+        # current.  If we call mjr_render without switching back to the EGL
+        # context, it operates on GLFW's default framebuffer → black frames.
+        # make_context_current() restores the EGL context so that
+        # mjr_render + mjr_readPixels target the correct offscreen FBO.
         try:
+            ctx.opengl_context.make_context_current()
             ctx.render(width, height)
             rgb, depth_zbuf = ctx.read_pixels(width, height, depth=True)
         except Exception as e:

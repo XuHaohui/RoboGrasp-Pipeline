@@ -18,7 +18,7 @@ except ImportError:
     HAS_CV = False
 
 import mujoco_py
-from mujoco_py import MjSim, MjViewer, GlfwContext, MjRenderContextOffscreen
+from mujoco_py import MjSim, MjViewer, MjRenderContextOffscreen
 
 
 class MuJoCoCameraBridge(Node):
@@ -67,7 +67,10 @@ class MuJoCoCameraBridge(Node):
         self._sim = MjSim(self._model)
         self._viewer = MjViewer(self._sim)
 
-        self._offscreen_ctx = MjRenderContextOffscreen(self._sim, 0)
+        # ─── KEY FIX: Explicit offscreen context isolated from viewer ───
+        # device_id=-1 → OSMesa (software rasterizer, no GPU context conflict with MjViewer)
+        # device_id=0  → GLFW fallback only if OSMesa is unavailable
+        self._offscreen = self._create_offscreen_context()
 
         self.get_logger().info(
             f'MuJoCo world loaded with {self._model.nbody} bodies')
@@ -89,6 +92,29 @@ class MuJoCoCameraBridge(Node):
 
         self.get_logger().info(
             'Camera bridge started: /joint_states → MuJoCo → /camera/*')
+
+    # ────────────────────────────────────────────
+    #  Offscreen render context (isolated from MjViewer's GLFW context)
+    # ────────────────────────────────────────────
+
+    def _create_offscreen_context(self):
+        """Create an offscreen render context.
+
+        Priority: OSMesa (-1) → pure software, zero conflict with MjViewer.
+        Fallback: GLFW device 0 if OSMesa is unavailable.
+        """
+        for device_id, label in [(-1, 'OSMesa'), (0, 'GLFW')]:
+            try:
+                ctx = MjRenderContextOffscreen(self._sim, device_id)
+                self.get_logger().info(
+                    f'Offscreen render context ({label}) created successfully')
+                return ctx
+            except Exception as e:
+                self.get_logger().warn(
+                    f'Offscreen context ({label}) failed: {e}')
+        raise RuntimeError(
+            'Failed to create any offscreen MuJoCo render context. '
+            'Install OSMesa:  apt install libosmesa6-dev')
 
     # ────────────────────────────────────────────
     #  XML merge
@@ -142,25 +168,39 @@ class MuJoCoCameraBridge(Node):
             self._publish_camera()
 
     # ────────────────────────────────────────────
-    #  Camera image publishing
+    #  Camera image publishing (offscreen FBO, isolated from MjViewer)
     # ────────────────────────────────────────────
 
     def _publish_camera(self):
         width, height = 640, 480
         stamp = self.get_clock().now().to_msg()
 
-        ctx = self._offscreen_ctx
-        ctx.cam.lookat[:] = self._cam_lookat
-        ctx.cam.distance = self._cam_distance
-        ctx.cam.elevation = self._cam_elevation
-        ctx.cam.azimuth = self._cam_azimuth
+        # ─── FIX 1: Write camera parameters to sim.data.cam (the authority) ───
+        # In mujoco_py, sim.data.cam is the "free camera" backing store.
+        # ctx.cam is a SEPARATE MjvCamera struct that may be stale or get
+        # overwritten during render().  Always sync BOTH for safety.
+        free_cam = self._sim.data.cam
+        free_cam.lookat[:] = self._cam_lookat
+        free_cam.distance = self._cam_distance
+        free_cam.elevation = self._cam_elevation
+        free_cam.azimuth = self._cam_azimuth
 
+        ctx = self._offscreen
+        ctx.cam.lookat[:] = free_cam.lookat
+        ctx.cam.distance = free_cam.distance
+        ctx.cam.elevation = free_cam.elevation
+        ctx.cam.azimuth = free_cam.azimuth
+
+        # ─── FIX 2: Configure fovy ───
         saved_fovy = self._sim.model.vis.global_.fovy
         self._sim.model.vis.global_.fovy = self._cam_fovy
 
+        # ─── FIX 3: Render + read pixels via the offscreen context directly ───
+        # Using ctx.render() + ctx.read_pixels() avoids the lazy-init path in
+        # sim.render() which can create a second GLFW context on device 0.
         try:
             ctx.render(width, height)
-            rgb, depth = ctx.read_pixels(width, height, True)
+            rgb, depth_zbuf = ctx.read_pixels(width, height, depth=True)
         except Exception as e:
             self.get_logger().warn(
                 f'Camera render failed: {e}', throttle_duration_sec=5.0)
@@ -169,7 +209,32 @@ class MuJoCoCameraBridge(Node):
 
         self._sim.model.vis.global_.fovy = saved_fovy
 
-        # RGB
+        # ─── FIX 4: Flip vertically (OpenGL bottom-up → ROS top-down) ───
+        # mjr_readPixels uses OpenGL coordinate convention: first row = bottom.
+        # ROS / RViz / OpenCV expect first row = top.  np.flipud corrects this.
+        rgb = np.ascontiguousarray(np.flipud(rgb))
+        depth_zbuf = np.flipud(depth_zbuf)
+
+        # ─── FIX 5: Diagnostic — log pixel stats to confirm non-black frames ───
+        if self._step_count % 100 == 0:
+            rgb_min, rgb_max = float(rgb.min()), float(rgb.max())
+            self.get_logger().info(
+                f'Camera frame #{self._step_count}: '
+                f'RGB min={rgb_min:.0f} max={rgb_max:.0f} '
+                f'nonzero_ratio={(rgb > 0).mean():.4f}',
+                throttle_duration_sec=2.0)
+
+        # ─── Depth: z-buffer → metric (meters) ───
+        znear = self._sim.model.vis.map.znear
+        zfar = self._sim.model.vis.map.zfar
+        depth_metric = np.zeros_like(depth_zbuf, dtype=np.float32)
+        valid = (depth_zbuf > 0.0) & (depth_zbuf < 1.0)
+        if valid.any():
+            z_ndc = 2.0 * depth_zbuf[valid] - 1.0
+            depth_metric[valid] = (2.0 * znear * zfar) / (
+                zfar + znear - z_ndc * (zfar - znear))
+
+        # ─── Publish RGB ───
         rgb_msg = Image()
         rgb_msg.header.stamp = stamp
         rgb_msg.header.frame_id = 'top_down_camera'
@@ -179,12 +244,9 @@ class MuJoCoCameraBridge(Node):
         rgb_msg.is_bigendian = False
         rgb_msg.step = width * 3
         rgb_msg.data = rgb.tobytes()
-        try:
-            self._rgb_pub.publish(rgb_msg)
-        except Exception:
-            pass
+        self._rgb_pub.publish(rgb_msg)
 
-        # Depth (MuJoCo returns z-buffer values; convert to float meters)
+        # ─── Publish Depth ───
         depth_msg = Image()
         depth_msg.header.stamp = stamp
         depth_msg.header.frame_id = 'top_down_camera'
@@ -193,21 +255,17 @@ class MuJoCoCameraBridge(Node):
         depth_msg.encoding = '32FC1'
         depth_msg.is_bigendian = False
         depth_msg.step = width * 4
-        depth_msg.data = depth.astype(np.float32).tobytes()
-        try:
-            self._depth_pub.publish(depth_msg)
-        except Exception:
-            pass
+        depth_msg.data = depth_metric.tobytes()
+        self._depth_pub.publish(depth_msg)
 
-        # CameraInfo (fixed intrinsics from fovy=60°, 640x480)
+        # ─── Publish CameraInfo ───
         ci = CameraInfo()
         ci.header.stamp = stamp
         ci.header.frame_id = 'top_down_camera'
         ci.width = width
         ci.height = height
-        # f = (h/2) / tan(fovy/2), assume square pixels
-        fovy = np.deg2rad(self._cam_fovy)
-        fy = (height / 2.0) / np.tan(fovy / 2.0)
+        fovy_rad = np.deg2rad(self._cam_fovy)
+        fy = (height / 2.0) / np.tan(fovy_rad / 2.0)
         fx = fy
         ci.k = [fx, 0.0, width / 2.0,
                 0.0, fy, height / 2.0,
@@ -216,10 +274,7 @@ class MuJoCoCameraBridge(Node):
                 0.0, fy, height / 2.0, 0.0,
                 0.0, 0.0, 1.0, 0.0]
         ci.distortion_model = 'plumb_bob'
-        try:
-            self._ci_pub.publish(ci)
-        except Exception:
-            pass
+        self._ci_pub.publish(ci)
 
 
 def main():

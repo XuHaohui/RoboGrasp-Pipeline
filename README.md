@@ -93,7 +93,7 @@ ros2 launch piper_highlevel piper_moveit_bridge.launch.py
 
 ```bash
 source scripts/setup_env.sh
-ros2 run piper_mujoco piper_mujoco_ctrl.py
+ros2 run piper_highlevel mj_camera_bridge.py
 ```
 
 **终端 C：** 发布目标物体位姿（触发全流程）

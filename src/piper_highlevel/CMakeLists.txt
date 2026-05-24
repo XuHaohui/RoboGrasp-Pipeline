@@ -28,9 +28,6 @@ if(BUILD_TESTING)
   ament_lint_auto_find_test_dependencies()
 endif()
 
-ament_package()
-
-
 add_executable(moveit_bridge
   src/moveit_bridge.cpp
   src/moveit_bridge_fsm.cpp
@@ -50,3 +47,14 @@ install(TARGETS
 install(DIRECTORY launch
   DESTINATION share/${PROJECT_NAME}
 )
+
+install(DIRECTORY config
+  DESTINATION share/${PROJECT_NAME}
+)
+
+install(PROGRAMS
+  scripts/mj_camera_bridge.py
+  DESTINATION lib/${PROJECT_NAME}
+)
+
+ament_package()

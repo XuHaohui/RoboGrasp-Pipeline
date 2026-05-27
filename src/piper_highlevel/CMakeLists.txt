@@ -54,6 +54,8 @@ install(DIRECTORY config
 
 install(PROGRAMS
   scripts/mj_camera_bridge.py
+  scripts/mj_physics.py
+  scripts/mj_camera.py
   DESTINATION lib/${PROJECT_NAME}
 )
 

@@ -36,3 +36,5 @@ oculus_reader/oculus_reader
 
 # CMakeLists or other workspace files at src root
 src/CMakeLists.txt
+
+TODO_gripper_fix.md

@@ -342,6 +342,13 @@ void addObject(moveit::planning_interface::PlanningSceneInterface& planning_scen
                const std::string& frame_id,
                const ObjectGeometry& geo)
 {
+    if (geo.bbox[0] <= 0.0f || geo.bbox[1] <= 0.0f || geo.bbox[2] <= 0.0f) {
+        RCLCPP_ERROR(logger,
+            "addObject rejected: bbox [%.3f, %.3f, %.3f] invalid for '%s'",
+            geo.bbox[0], geo.bbox[1], geo.bbox[2], geo.object_id.c_str());
+        return;
+    }
+
     (void)frame_id;
     moveit_msgs::msg::CollisionObject collision_object;
     collision_object.header.frame_id = "world";
@@ -476,7 +483,7 @@ std::vector<geometry_msgs::msg::Pose> generateGraspCandidates(const geometry_msg
 {
     std::vector<geometry_msgs::msg::Pose> candidates;
 
-    double tcp_offset_z = 0.12;
+    double tcp_offset_z = 0.10;
     double tcp_offset_y = 0.01;
     double tcp_offset_x = 0.0;
 

@@ -3,7 +3,7 @@
 **[ROS 2 Humble] [MoveIt2] [MuJoCo] [C++]**
 
 > ⚠️ 本仓库已经具备完整流程，但仍然处于优化状态，接口与启动方式可能会变化。如有问题可联系：[xuhaohui07@outlook.com](mailto:xuhaohui07@outlook.com)
-
+>当前版本是过渡版本，由于修改内容过多，仍然存在一定量的bug没有修复，建议回退到上一版本进行使用,下一个稳定版本在两周之内会更新
 ---
 
 ## 1. 项目概述
@@ -242,6 +242,7 @@ IDLE → OPEN_GRIPPER → PRE_GRASP → APPROACH → GRASP → LIFT
 
 ## 7. 已知不足
 
+- pipline可以完整完成，但是无法在mujoco中完成实际上的物体抓取
 - 抓取控制依赖 MoveIt 的 attach/detach 虚拟绑定，未使用 MuJoCo 接触力反馈
 - 当前仅支持圆柱体（cylinder）抓取，其他物体类型待后续适配
 - 物理参数与相机参数硬编码在代码中，缺少外部配置文件

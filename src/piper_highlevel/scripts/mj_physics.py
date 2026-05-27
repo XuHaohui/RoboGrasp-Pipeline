@@ -19,12 +19,16 @@ def merge_xml(robot_path, world_path):
 
 def tune_gripper_physics(model):
     """Apply friction, contact stiffness, and force range to gripper geoms/actuators."""
-    for name in ('link7', 'link8'):
-        gid = model.geom_name2id(name)
-        model.geom_friction[gid * 3 : gid * 3 + 3] = [2.0, 1.0, 0.5]
-        model.geom_solimp[gid * 5 : gid * 5 + 5] = [0.9, 0.95, 0.001, 0.5, 2]
-        model.geom_solref[gid * 2 : gid * 2 + 2] = [0.02, 1]
-        model.geom_condim[gid] = 4
+    for body_name in ('link7', 'link8'):
+        body_id = model.body_name2id(body_name)
+        geom_start = model.body_geomadr[body_id]
+        geom_count = model.body_geomnum[body_id]
+        for i in range(geom_count):
+            gid = geom_start + i
+            model.geom_friction[gid * 3 : gid * 3 + 3] = [2.0, 1.0, 0.5]
+            model.geom_solimp[gid * 5 : gid * 5 + 5] = [0.9, 0.95, 0.001, 0.5, 2]
+            model.geom_solref[gid * 2 : gid * 2 + 2] = [0.02, 1]
+            model.geom_condim[gid] = 4
 
     for name in ('joint7', 'joint8'):
         aid = model.actuator_name2id(name)

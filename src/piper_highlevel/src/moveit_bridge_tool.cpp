@@ -267,21 +267,14 @@ bool allowGripperCollision(
 }
 
 bool closeGripperToObject(moveit::planning_interface::MoveGroupInterface& gripper_group,
-                          double object_width,
-                          moveit::planning_interface::MoveGroupInterface::Plan& plan_out)
+                           double object_width,
+                           moveit::planning_interface::MoveGroupInterface::Plan& plan_out)
 {
-    const double MAX_WIDTH = 0.07;
-
-    double target_width = object_width - 0.01;
-    if (target_width < 0) {
-        target_width = 0;
-    }
-
-    double target_joint_value = target_width / MAX_WIDTH * 0.04;
+    double target = std::max(object_width / 2.0, 0.005);
 
     std::vector<double> joint_values = gripper_group.getCurrentJointValues();
     for (auto& val : joint_values) {
-        val = target_joint_value;
+        val = target;
     }
 
     gripper_group.setJointValueTarget(joint_values);
@@ -484,7 +477,7 @@ std::vector<geometry_msgs::msg::Pose> generateGraspCandidates(const geometry_msg
     std::vector<geometry_msgs::msg::Pose> candidates;
 
     double tcp_offset_z = 0.10;
-    double tcp_offset_y = 0.01;
+    double tcp_offset_y = 0.0;
     double tcp_offset_x = 0.0;
 
     for (int i = 0; i < 10; ++i) {

@@ -13,6 +13,7 @@
 #include <moveit_msgs/srv/apply_planning_scene.hpp>
 
 #include "piper_highlevel/moveit_bridge_tool.hpp"
+#include "piper_highlevel/gripper_force_ctrl.hpp"
 
 namespace piper_highlevel {
 
@@ -39,6 +40,7 @@ public:
                     rclcpp::Client<moveit_msgs::srv::GetPlanningScene>::SharedPtr get_scene_client,
                     rclcpp::Client<moveit_msgs::srv::ApplyPlanningScene>::SharedPtr apply_scene_client,
                     const std::string& group_name,
+                    piper_highlevel::GripperForceController& gripper_force_ctrl,
                     const rclcpp::Logger& logger);
 
     bool Run(const geometry_msgs::msg::Pose& target_pose, const std::string& frame_id, const ObjectGeometry& geo);
@@ -50,6 +52,7 @@ private:
     rclcpp::Client<moveit_msgs::srv::GetPlanningScene>::SharedPtr get_scene_client_;
     rclcpp::Client<moveit_msgs::srv::ApplyPlanningScene>::SharedPtr apply_scene_client_;
     std::string group_name_;
+    piper_highlevel::GripperForceController& gripper_force_ctrl_;
     rclcpp::Logger logger_;
 };
 

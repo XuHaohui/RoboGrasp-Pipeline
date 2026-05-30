@@ -2,7 +2,10 @@
 
 import os
 import tempfile
+from collections import namedtuple
+import numpy as np
 import mujoco_py
+from mujoco_py.builder import functions
 
 
 def merge_xml(robot_path, world_path):
@@ -25,14 +28,14 @@ def tune_gripper_physics(model):
         geom_count = model.body_geomnum[body_id]
         for i in range(geom_count):
             gid = geom_start + i
-            model.geom_friction[gid * 3 : gid * 3 + 3] = [2.0, 1.0, 0.5]
+            model.geom_friction[gid * 3 : gid * 3 + 3] = [5.0, 2.0, 0.5]
             model.geom_solimp[gid * 5 : gid * 5 + 5] = [0.9, 0.95, 0.001, 0.5, 2]
-            model.geom_solref[gid * 2 : gid * 2 + 2] = [0.02, 1]
+            model.geom_solref[gid * 2 : gid * 2 + 2] = [0.005, 1]
             model.geom_condim[gid] = 4
 
     for name in ('joint7', 'joint8'):
         aid = model.actuator_name2id(name)
-        model.actuator_forcerange[aid * 2 : aid * 2 + 2] = [-200, 200]
+        model.actuator_forcerange[aid * 2 : aid * 2 + 2] = [-500, 500]
 
 
 def load_simulation(robot_xml_path, world_xml_path, logger):
@@ -64,6 +67,115 @@ def load_simulation(robot_xml_path, world_xml_path, logger):
     viewer = mujoco_py.MjViewer(sim)
     viewer.render()
     return model, sim, viewer
+
+
+GripperForceResult = namedtuple('GripperForceResult', ['in_contact', 'force', 'joint7_pos'])
+
+def get_gripper_contact_force(sim):
+    """Scan MuJoCo contacts involving link7/link8 geometries; return total force magnitude."""
+    model = sim.model
+    data = sim.data
+
+    gripper_geom_ids = set()
+    for name in ('link7', 'link8'):
+        try:
+            body_id = model.body_name2id(name)
+            geom_start = model.body_geomadr[body_id]
+            geom_count = model.body_geomnum[body_id]
+            for i in range(geom_count):
+                gripper_geom_ids.add(geom_start + i)
+        except Exception:
+            continue
+
+    if not gripper_geom_ids:
+        return 0.0
+
+    total_force = 0.0
+    result = np.zeros(6)
+    for i in range(data.ncon):
+        contact = data.contact[i]
+        if contact.geom1 in gripper_geom_ids or contact.geom2 in gripper_geom_ids:
+            functions.mj_contactForce(model, data, i, result)
+            total_force += abs(result[0]) + abs(result[1]) + abs(result[2])
+    return total_force
+
+
+def step_simulation_force_aware(sim, targets, force_threshold=50.0):
+    """Two-stage damping gripper close.
+
+    Stage 1 (fast):   ramp = 0.001   —  no contact, fast approach
+    Stage 2 (slow):   ramp = 0.0001  —  contact detected, slow squeeze to target
+
+    Returns:
+        GripperForceResult(in_contact, force, joint7_actual_position)
+    """
+    FAST_RAMP = 0.001
+    SLOW_RAMP = 0.0001
+
+    pre_force = get_gripper_contact_force(sim)
+
+    joints_to_ramp = {'joint7', 'joint8'}
+    gripper_dir = 0.0
+    current_j7 = 0.0
+    target_j7 = 0.0
+
+    try:
+        j7_qpos = sim.model.get_joint_qpos_addr('joint7')
+        current_j7 = sim.data.qpos[j7_qpos]
+    except Exception:
+        pass
+
+    if 'joint7' in targets:
+        target_j7 = targets['joint7']
+        if target_j7 > current_j7 + FAST_RAMP:
+            gripper_dir = 1.0
+        elif target_j7 < current_j7 - FAST_RAMP:
+            gripper_dir = -1.0
+
+    if gripper_dir > 0:
+        if pre_force >= force_threshold:
+            ramp_step = SLOW_RAMP
+        else:
+            ramp_step = FAST_RAMP
+    else:
+        ramp_step = FAST_RAMP
+
+    for joint_name, target in targets.items():
+        if joint_name not in sim.model.joint_names:
+            continue
+        try:
+            actuator_id = sim.model.actuator_name2id(joint_name)
+            if joint_name in joints_to_ramp:
+                try:
+                    j_qpos = sim.model.get_joint_qpos_addr(joint_name)
+                    current = sim.data.qpos[j_qpos]
+                except Exception:
+                    current = 0.0
+                if ramp_step == 0.0:
+                    ramp_target = current
+                elif abs(target - current) <= ramp_step:
+                    ramp_target = target
+                else:
+                    ramp_target = current + ramp_step if target > current else current - ramp_step
+                sim.data.ctrl[actuator_id] = ramp_target
+            else:
+                sim.data.ctrl[actuator_id] = target
+        except Exception:
+            continue
+
+    sim.step()
+
+    force = get_gripper_contact_force(sim)
+    actual_j7 = 0.0
+    try:
+        j7_qpos = sim.model.get_joint_qpos_addr('joint7')
+        actual_j7 = sim.data.qpos[j7_qpos]
+    except Exception:
+        pass
+    target_achieved = abs(target_j7 - actual_j7) <= 2 * FAST_RAMP
+    in_contact = (gripper_dir > 0 and force >= force_threshold and target_achieved)
+
+    return GripperForceResult(in_contact=in_contact, force=force, joint7_pos=actual_j7)
 
 
 def step_simulation(sim, targets):

@@ -32,12 +32,8 @@
 source /opt/ros/humble/setup.bash
 
 # 克隆本仓库
-git clone 
-
-# 获取上游依赖 piper_ros (如尚未存在)
-cd src
-git clone https://github.com/agilexrobotics/piper_ros.git piper_ros
-cd piper_ros && git checkout humble
+git clone <repo-url> piper_control
+cd piper_control
 
 # 安装系统依赖
 rosdep update
@@ -152,7 +148,17 @@ ros2 launch piper_highlevel piper_moveit_bridge.launch.py group_name:=<你的gro
 | `bbox_size` | `float64[3]` | 包围盒尺寸 (x, y, z) |
 | `bottom_center` | `geometry_msgs/Point` | 物体底面中心位置 |
 
-### 4.2 `mj_camera_bridge` 节点（MuJoCo 相机桥接）
+### 4.2 夹爪接触力 Topic
+
+`piper_moveit_bridge` 节点内部订阅 MuJoCo 接触力，用于抓取检测：
+
+| 类型 | 名称 | 消息类型 |
+|------|------|----------|
+| 订阅 | `/mujoco/gripper_contact` | `std_msgs/msg/Float32` |
+
+接触力阈值 50 N，超时 3 秒。
+
+### 4.3 `mj_camera_bridge` 节点（MuJoCo 相机桥接）
 
 订阅 `/joint_states` 驱动 MuJoCo 仿真，并发布 RGB/深度图像。内部采用模块化设计：`mj_physics.py` 负责仿真加载与步进，`mj_camera.py` 负责离屏渲染与图像发布，`mj_camera_bridge.py` 负责 ROS 接口编排。
 
@@ -163,11 +169,11 @@ ros2 launch piper_highlevel piper_moveit_bridge.launch.py group_name:=<你的gro
 | 发布 | `/camera/depth/image_raw` | `sensor_msgs/msg/Image` (32FC1) |
 | 发布 | `/camera/camera_info` | `sensor_msgs/msg/CameraInfo` |
 
-### 4.3 静态 TF
+### 4.4 静态 TF
 
 Launch 文件自动发布 `world → map` 静态变换。
 
-### 4.4 Launch 参数
+### 4.5 Launch 参数
 
 | 参数 | 默认值 | 说明 |
 |------|--------|------|
@@ -178,7 +184,7 @@ Launch 文件自动发布 `world → map` 静态变换。
 | `move_group_delay` | `2.0` | move_group 延迟启动 (秒) |
 | `bridge_delay` | `2.5` | bridge 节点延迟启动 (秒) |
 
-### 4.5 MuJoCo 仿真场景
+### 4.6 MuJoCo 仿真场景
 
 `config/piper_world.xml` 定义仿真环境，与机器人模型自动合并加载：
 
@@ -208,13 +214,14 @@ IDLE → OPEN_GRIPPER → PRE_GRASP → APPROACH → GRASP → LIFT
 
 ## 6. 版本历史
 
-### v0.7 (当前)
+### v0.8 (当前) — 本仓库新增
+
+- **夹爪力控**：新增 GripperForceController，通过 `/mujoco/gripper_contact` 实时感知夹爪接触力；FSM GRASP 阶段集成接触验证，替代纯关节位置判断
+- **仿真场景优化**：`piper_world.xml` 重构，物体添加 mass/friction 物理属性；`mj_physics.py` 注入夹爪物性参数、提供接触力计算；`mj_camera_bridge.py` 发布接触力话题
+
+### v0.7 — 上游最新 
 
 - **接口升级**：订阅类型从 `geometry_msgs/PoseStamped` 升级为 `robograsp_interfaces/ObjectInfo`，支持物体类别、包围盒尺寸、底面中心位置
-- **RViz 集成**：RViz 明确为流水线必需节点，不再作为可选组件
-
-### v0.8
-
 - **夹爪摩擦力修复**：运行时修改夹爪 geom 的 friction/solimp/solref/condim 参数，夹持力翻倍，解决抓取物体滑落问题
 - **相机桥接模块化**：从单文件拆为 `mj_physics.py`（仿真核心）、`mj_camera.py`（相机渲染）、`mj_camera_bridge.py`（薄壳编排）三个模块，职责分离
 
@@ -224,26 +231,12 @@ IDLE → OPEN_GRIPPER → PRE_GRASP → APPROACH → GRASP → LIFT
 - **放置后后撤**：RELEASE 阶段在放置物体后执行后撤动作，防止直接回 Home 导致与桌面碰撞
 - **Home 后闭合夹爪**：RETURN_HOME 完成后闭合夹爪，确保流程可重复执行
 
-### v0.5 — 状态机重构
-
-- **状态机流水线**：引入 12 状态 FSM（OPEN_GRIPPER → PRE_GRASP → APPROACH → GRASP → LIFT → PRE_PLACE → PLACE → RELEASE → RETURN_HOME → RECOVER → FAILED），彻底修改为半离线规划模式
-- **MoveIt 工具函数库**：夹爪控制、笛卡尔运动、碰撞管理、物体吸附/分离、多候选点生成（10 抓取候选 + 27 放置候选）
-- **失败恢复机制**：最多 3 次自动重试，根据失败阶段智能回退
-- 改用 **CycloneDDS** 中间件，提升通信稳定性
-
-### v0.4 — 抓取稳定性
-
-- 大幅提高 PRE_GRASP → APPROACH 阶段成功率
-- 删除 APPROACH 的笛卡尔接近，改用普通规划接近
-- PLACE 阶段改为现场计算笛卡尔接近
-- 引入 `cartesianMove` 权重控制，阻止夹爪完全关闭问题
-
 ---
 
 ## 7. 已知不足
 
 - pipline可以完整完成，但是无法在mujoco中完成实际上的物体抓取
-- 抓取控制依赖 MoveIt 的 attach/detach 虚拟绑定，未使用 MuJoCo 接触力反馈
+- MuJoCo 接触力反馈已初步集成（抓取检测），但尚未完全替代 MoveIt attach/detach 虚拟绑定
 - 当前仅支持圆柱体（cylinder）抓取，其他物体类型待后续适配
 - 物理参数与相机参数硬编码在代码中，缺少外部配置文件
 
@@ -251,7 +244,7 @@ IDLE → OPEN_GRIPPER → PRE_GRASP → APPROACH → GRASP → LIFT
 
 ## 8. 下一步规划
 
-- 改由 MuJoCo 接触力反馈驱动抓取，替换 MoveIt attach/detach
+- 完善 MuJoCo 接触力反馈，全面替换 MoveIt attach/detach 虚拟绑定
 - 扩展支持 cube、box 等更多物体类型
 - 物理参数与仿真配置 YAML 化，支持运行时调整
 

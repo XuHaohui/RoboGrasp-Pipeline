@@ -15,6 +15,7 @@ find_package(moveit_msgs REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(trajectory_msgs REQUIRED)
 find_package(robograsp_interfaces REQUIRED)
+find_package(std_msgs REQUIRED)
 
 if(BUILD_TESTING)
   find_package(ament_lint_auto REQUIRED)
@@ -32,12 +33,13 @@ add_executable(moveit_bridge
   src/moveit_bridge.cpp
   src/moveit_bridge_fsm.cpp
   src/moveit_bridge_tool.cpp
+  src/gripper_force_ctrl.cpp
 )
 target_include_directories(moveit_bridge PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
   $<INSTALL_INTERFACE:include>
 )
-ament_target_dependencies(moveit_bridge rclcpp geometry_msgs sensor_msgs moveit_ros_planning_interface moveit_msgs trajectory_msgs robograsp_interfaces)
+ament_target_dependencies(moveit_bridge rclcpp geometry_msgs sensor_msgs moveit_ros_planning_interface moveit_msgs trajectory_msgs robograsp_interfaces std_msgs)
 
 install(TARGETS
   moveit_bridge

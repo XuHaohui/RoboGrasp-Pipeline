@@ -13,6 +13,7 @@
 #include <moveit_msgs/srv/apply_planning_scene.hpp>
 
 #include "piper_highlevel/moveit_bridge_tool.hpp"
+#include "piper_highlevel/gripper_force_ctrl.hpp"
 
 class MoveItBridge : public rclcpp::Node {
 public:
@@ -44,4 +45,6 @@ private:
 
     bool busy_ = false;
     std::string last_object_id_;
+
+    piper_highlevel::GripperForceController gripper_force_ctrl_;
 };

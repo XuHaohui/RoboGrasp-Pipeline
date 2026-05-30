@@ -66,6 +66,7 @@ void MoveItBridge::init_move_group()
         gripper_group_ = std::make_shared<moveit::planning_interface::MoveGroupInterface>(this->shared_from_this(), "gripper");
         move_group_->setPlanningTime(10.0);
         move_group_->setPlannerId("RRTConnectkConfigDefault");
+        gripper_force_ctrl_.attach(*this);
         RCLCPP_INFO(this->get_logger(), "MoveGroupInterface initialized successfully");
         timer_->cancel();
     } catch (const std::exception& e) {
@@ -154,6 +155,7 @@ void MoveItBridge::GraspSequence(const geometry_msgs::msg::Pose& target_pose, co
                                          get_scene_client_,
                                          apply_scene_client_,
                                          group_name_,
+                                         gripper_force_ctrl_,
                                          this->get_logger());
     const bool ok = fsm.Run(target_pose, frame_id, geo);
     if (!ok) {

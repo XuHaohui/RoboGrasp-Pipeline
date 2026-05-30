@@ -7,6 +7,7 @@ import sys
 import rclpy
 from rclpy.node import Node
 from sensor_msgs.msg import JointState, Image, CameraInfo
+from std_msgs.msg import Float32
 from ament_index_python.packages import get_package_share_directory
 import numpy as np
 import glfw
@@ -48,6 +49,10 @@ class MuJoCoCameraBridge(Node):
         self._viewer.cam.azimuth = self._cam_azimuth
         self._model.vis.global_.fovy = self._cam_fovy
 
+        # Improve depth precision for 1m-range scene (was znear=0.01 zfar=50)
+        self._model.vis.map.znear = 0.1
+        self._model.vis.map.zfar = 5.0
+
         # ── Camera ──
         self._offscreen = mj_camera.create_offscreen_context(
             self._sim, self.get_logger())
@@ -62,6 +67,7 @@ class MuJoCoCameraBridge(Node):
         self._rgb_pub = self.create_publisher(Image, '/camera/color/image_raw', 1)
         self._depth_pub = self.create_publisher(Image, '/camera/depth/image_raw', 1)
         self._ci_pub = self.create_publisher(CameraInfo, '/camera/camera_info', 1)
+        self._gripper_pub = self.create_publisher(Float32, '/mujoco/gripper_contact', 1)
         self.create_timer(0.01, self._control_loop)
 
         self.get_logger().info('Camera bridge started: /joint_states → MuJoCo → /camera/*')
@@ -79,9 +85,15 @@ class MuJoCoCameraBridge(Node):
     def _control_loop(self):
         self._step_count += 1
 
-        mj_physics.step_simulation(self._sim, self._joint_targets)
+        gripper_result = mj_physics.step_simulation_force_aware(
+            self._sim, self._joint_targets,
+            force_threshold=50.0)
         glfw.make_context_current(self._viewer.window)
         self._viewer.render()
+
+        msg = Float32()
+        msg.data = gripper_result.force
+        self._gripper_pub.publish(msg)
 
         if self._step_count % 10 == 0:
             self._publish_camera()

@@ -14,7 +14,7 @@ namespace {
 
 constexpr double kPosePosTol = 0.02;
 constexpr double kPoseAngleTol = 0.25;
-constexpr double kJointDeltaTol = 0.002;
+constexpr double kJointDeltaTol = 0.005;
 constexpr int kMaxRetries = 3;
 
 bool isPoseClose(const geometry_msgs::msg::Pose& current,
@@ -111,6 +111,7 @@ MoveItBridgeFsm::MoveItBridgeFsm(
     rclcpp::Client<moveit_msgs::srv::GetPlanningScene>::SharedPtr get_scene_client,
     rclcpp::Client<moveit_msgs::srv::ApplyPlanningScene>::SharedPtr apply_scene_client,
     const std::string& group_name,
+    piper_highlevel::GripperForceController& gripper_force_ctrl,
     const rclcpp::Logger& logger)
     : move_group_(move_group),
       gripper_group_(gripper_group),
@@ -118,6 +119,7 @@ MoveItBridgeFsm::MoveItBridgeFsm(
       get_scene_client_(std::move(get_scene_client)),
       apply_scene_client_(std::move(apply_scene_client)),
       group_name_(group_name),
+      gripper_force_ctrl_(gripper_force_ctrl),
       logger_(logger)
 {
 
@@ -241,6 +243,8 @@ bool MoveItBridgeFsm::Run(const geometry_msgs::msg::Pose& target_pose, const std
             }
 
             geometry_msgs::msg::Pose p = move_group_.getCurrentPose().pose;
+            p.position.x = target_pose.position.x;
+            p.position.y = target_pose.position.y;
             p.position.z = target_pose.position.z + (ctx.object_geometry.bbox[2] / 2.0);
 
             move_group_.setStartStateToCurrentState();
@@ -272,6 +276,13 @@ bool MoveItBridgeFsm::Run(const geometry_msgs::msg::Pose& target_pose, const std
             }
             gripper_group_.execute(plan);
             waitUntilStable(move_group_, std::chrono::milliseconds(1500), std::chrono::milliseconds(150));
+
+            const bool contact_ok = gripper_force_ctrl_.waitForContact();
+            if (!contact_ok) {
+                RCLCPP_WARN(logger_, "Gripper contact not detected via MuJoCo, force=%.2f",
+                            gripper_force_ctrl_.getContactForce());
+            }
+
             auto after = gripper_group_.getCurrentJointValues();
             const bool updated = jointsUpdated(before, after, kJointDeltaTol);
             const bool attach_ok = moveit_bridge_tool::attachObject(planning_scene_interface_, logger_, true, ctx.object_geometry.object_id);
